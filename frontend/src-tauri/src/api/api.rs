@@ -258,9 +258,9 @@ pub async fn api_get_model_config<R: Runtime>(
                 &config.whisper_model,
                 &config.ollama_endpoint
             );
-            // A built-in model that has since been retired (Gemma 3, Qwen 3.5) is
-            // still sitting in older databases. Left alone it fails every summary
-            // with "Unknown model: qwen3.5:2b", so fall back to the current default.
+            // A built-in model that has since been retired (Gemma 3) is still
+            // sitting in older databases. Left alone it fails every summary with
+            // "Unknown model: gemma3:4b", so fall back to the current default.
             let model = if config.provider == crate::config::BUILTIN_TRANSCRIPT_PROVIDER
                 && crate::summary::summary_engine::get_model_by_name(&config.model).is_none()
             {

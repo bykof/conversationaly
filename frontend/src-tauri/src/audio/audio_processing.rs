@@ -96,45 +96,18 @@ pub fn normalize_v2(audio: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// True peak limiter with lookahead buffer (prevents clipping)
-struct TruePeakLimiter {
-    lookahead_samples: usize,
-    buffer: Vec<f32>,
-    gain_reduction: Vec<f32>,
-    current_position: usize,
-}
-
-impl TruePeakLimiter {
-    fn new(sample_rate: u32) -> Self {
-        const LIMITER_LOOKAHEAD_MS: usize = 10;
-        let lookahead_samples = ((sample_rate as usize * LIMITER_LOOKAHEAD_MS) / 1000).max(1);
-
-        Self {
-            lookahead_samples,
-            buffer: vec![0.0; lookahead_samples],
-            gain_reduction: vec![1.0; lookahead_samples],
-            current_position: 0,
-        }
-    }
-
-    fn process(&mut self, sample: f32, true_peak_limit: f32) -> f32 {
-        self.buffer[self.current_position] = sample;
-
-        let sample_abs = sample.abs();
-        if sample_abs > true_peak_limit {
-            let reduction = true_peak_limit / sample_abs;
-            self.gain_reduction[self.current_position] = reduction;
-        } else {
-            self.gain_reduction[self.current_position] = 1.0;
-        }
-
-        let output_position = (self.current_position + 1) % self.lookahead_samples;
-        let output_sample = self.buffer[output_position] * self.gain_reduction[output_position];
-
-        self.current_position = output_position;
-        output_sample
-    }
-}
+// A `TruePeakLimiter` used to sit here, described as a 10ms-lookahead true-peak
+// limiter. It was not one. It scaled each delayed sample by a reduction
+// computed from that same sample — `buffer[i] * (limit / |buffer[i]|)` — which
+// is `sign(buffer[i]) * limit`, i.e. hard clipping, reached via a delay line
+// that changed nothing. Real lookahead means applying the MINIMUM reduction
+// over the window ahead, so the gain is already down before the peak arrives;
+// applying each sample's own reduction is clipping with extra steps.
+//
+// It is gone rather than fixed. Once the gain below is bounded and glided, the
+// mic no longer arrives 30dB hot, so the stage it was meant to protect against
+// barely engages — and an honest clamp is both shorter and no worse than what
+// this actually did.
 
 /// Professional loudness normalizer using EBU R128 standard
 /// This is a STATEFUL normalizer that tracks cumulative loudness over time
@@ -146,11 +119,33 @@ impl TruePeakLimiter {
 ///
 pub struct LoudnessNormalizer {
     ebur128: ebur128::EbuR128,
-    limiter: TruePeakLimiter,
+    /// Where the gain is heading, from the latest loudness measurement.
+    target_gain: f32,
+    /// Where it is now. Moves toward `target_gain` a sample at a time, so a
+    /// measurement jump does not step the signal.
     gain_linear: f32,
     loudness_buffer: Vec<f32>,
     true_peak_limit: f32,
 }
+
+/// Bounds on the correction this stage may apply, in dB.
+///
+/// Unbounded is what it was, and `loudness_global()` over the first fraction of
+/// a second of a meeting measures room tone, not speech — around -60 LUFS,
+/// asking for +37dB. So every recording opened by amplifying its own noise
+/// floor by a factor of ~70 and clipping whatever the speaker said next, which
+/// is precisely the audio the model has to read to get the first sentence.
+///
+/// Asymmetric on purpose: a built-in laptop mic at -45 LUFS legitimately needs
+/// a lot of boost, so capping at +12dB would defeat the feature this exists
+/// for. Cutting never needs the same range.
+const MIN_GAIN_DB: f64 = -12.0;
+const MAX_GAIN_DB: f64 = 24.0;
+
+/// Per-sample approach rate toward the measured gain. ~1/(0.25s at 48kHz), so
+/// a gain change settles in about a quarter of a second — fast enough to track
+/// a speaker, slow enough to be inaudible.
+const GAIN_GLIDE: f32 = 1.0 / 12_000.0;
 
 impl LoudnessNormalizer {
     /// Create a new EBU R128 loudness normalizer
@@ -162,14 +157,24 @@ impl LoudnessNormalizer {
         const TRUE_PEAK_LIMIT: f64 = -1.0;
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
-        let ebur128 = ebur128::EbuR128::new(channels, sample_rate, ebur128::Mode::I | ebur128::Mode::TRUE_PEAK)
-            .map_err(|e| anyhow::anyhow!("Failed to create EBU R128 normalizer: {}", e))?;
+        // HISTOGRAM matters: without it ebur128 keeps every 100ms block of the
+        // meeting in a growing Vec and re-scans the whole thing on each
+        // loudness_global() call — which happens every 512 samples, inside the
+        // realtime capture callback. That is quadratic in meeting length on the
+        // one thread that must not miss its deadline. With HISTOGRAM the same
+        // measurement runs over a fixed 1000-bucket array forever.
+        let ebur128 = ebur128::EbuR128::new(
+            channels,
+            sample_rate,
+            ebur128::Mode::I | ebur128::Mode::TRUE_PEAK | ebur128::Mode::HISTOGRAM,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create EBU R128 normalizer: {}", e))?;
 
         let true_peak_limit = 10_f32.powf(TRUE_PEAK_LIMIT as f32 / 20.0);
 
         Ok(Self {
             ebur128,
-            limiter: TruePeakLimiter::new(sample_rate),
+            target_gain: 1.0,
             gain_linear: 1.0,
             loudness_buffer: Vec::with_capacity(ANALYZE_CHUNK_SIZE),
             true_peak_limit,
@@ -205,19 +210,24 @@ impl LoudnessNormalizer {
                     // Update gain based on cumulative loudness
                     if let Ok(current_lufs) = self.ebur128.loudness_global() {
                         if current_lufs.is_finite() && current_lufs < 0.0 {
-                            let gain_db = TARGET_LUFS - current_lufs;
-                            self.gain_linear = 10_f32.powf(gain_db as f32 / 20.0);
+                            let gain_db =
+                                (TARGET_LUFS - current_lufs).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+                            self.target_gain = 10_f32.powf(gain_db as f32 / 20.0);
                         }
                     }
                 }
                 self.loudness_buffer.clear();
             }
 
-            // Apply gain and true peak limiting
-            let amplified = sample * self.gain_linear;
-            let limited = self.limiter.process(amplified, self.true_peak_limit);
+            // Glide toward the target instead of stepping to it. The
+            // measurement moves fastest in the first seconds of a meeting,
+            // which is exactly where a step would land in the middle of the
+            // first sentence.
+            self.gain_linear += (self.target_gain - self.gain_linear) * GAIN_GLIDE;
 
-            normalized_samples.push(limited);
+            // An honest clamp, where a delay line pretending to be a limiter
+            // used to be.
+            normalized_samples.push((sample * self.gain_linear).clamp(-self.true_peak_limit, self.true_peak_limit));
         }
 
         normalized_samples
@@ -605,6 +615,116 @@ pub fn resample_audio(input: &[f32], from_sample_rate: u32, to_sample_rate: u32)
     }
 }
 
+/// Every ASR model in the app reads 16kHz mono, so this is the last thing that
+/// touches live audio before the model does.
+///
+/// It exists because [`resample`] builds a fresh resampler per call: correct for
+/// a whole file, wrong for a stream, where the filter has to carry its state
+/// across calls or every chunk boundary is a discontinuity.
+///
+/// What it replaces was worse than either. `vad::resample_to_16k` computed its
+/// anti-alias width as `sample_rate / (0.4 * sample_rate)`, which is `2` for
+/// every sample rate — a 5-tap moving average standing in for the 8kHz lowpass
+/// a 48k->16k decimation needs. Everything the microphone picked up between
+/// 8kHz and 24kHz folded back down on top of the speech the model was trying to
+/// read. That is heard as a model that mishears words, not as an audio bug.
+pub struct StreamingDownsampler16k {
+    resampler: Option<SincFixedIn<f32>>,
+    source_rate: u32,
+    /// Input samples not yet forming a whole resampler chunk. Carried between
+    /// calls so no audio is lost at a chunk boundary.
+    pending: Vec<f32>,
+    chunk: usize,
+}
+
+impl StreamingDownsampler16k {
+    const TARGET_RATE: u32 = 16_000;
+    /// 10ms of input per resampler call. Small enough not to add latency of its
+    /// own, large enough that the per-call overhead is irrelevant.
+    const CHUNK_MS: u32 = 10;
+
+    pub fn new(source_rate: u32) -> Self {
+        let chunk = (source_rate * Self::CHUNK_MS / 1000).max(1) as usize;
+
+        // sinc_len 64 is transparent for speech and cheap enough to stay well
+        // inside the realtime budget; this is the same trade the capture-side
+        // resampler already makes.
+        let params = SincInterpolationParameters {
+            sinc_len: 64,
+            f_cutoff: 0.95,
+            interpolation: SincInterpolationType::Linear,
+            oversampling_factor: 128,
+            window: WindowFunction::BlackmanHarris2,
+        };
+
+        let resampler = if source_rate == Self::TARGET_RATE {
+            None
+        } else {
+            match SincFixedIn::<f32>::new(
+                Self::TARGET_RATE as f64 / source_rate as f64,
+                2.0,
+                params,
+                chunk,
+                1,
+            ) {
+                Ok(r) => {
+                    info!(
+                        "✅ Live transcription downsampler: {}Hz → {}Hz (chunk {} samples)",
+                        source_rate,
+                        Self::TARGET_RATE,
+                        chunk
+                    );
+                    Some(r)
+                }
+                Err(e) => {
+                    // Not fatal: the per-call resampler still produces correct
+                    // audio, it just rebuilds its filter every window.
+                    warn!("⚠️ Could not build the streaming downsampler ({e}); falling back to per-call resampling");
+                    None
+                }
+            }
+        };
+
+        Self { resampler, source_rate, pending: Vec::with_capacity(chunk * 2), chunk }
+    }
+
+    /// Feed input-rate samples, get back whatever 16kHz audio is ready.
+    ///
+    /// Output lags input by less than one chunk; the remainder stays buffered
+    /// rather than being dropped or zero-padded.
+    pub fn push(&mut self, samples: &[f32]) -> Vec<f32> {
+        if samples.is_empty() {
+            return Vec::new();
+        }
+        let Some(resampler) = self.resampler.as_mut() else {
+            // Either already 16kHz, or the resampler could not be built.
+            if self.source_rate == Self::TARGET_RATE {
+                return samples.to_vec();
+            }
+            return resample_audio(samples, self.source_rate, Self::TARGET_RATE);
+        };
+
+        self.pending.extend_from_slice(samples);
+
+        let mut out = Vec::with_capacity(
+            (self.pending.len() * Self::TARGET_RATE as usize) / self.source_rate as usize + 1,
+        );
+        while self.pending.len() >= self.chunk {
+            let input = vec![self.pending.drain(..self.chunk).collect::<Vec<f32>>()];
+            match resampler.process(&input, None) {
+                Ok(mut waves) => {
+                    if let Some(wave) = waves.pop() {
+                        out.extend_from_slice(&wave);
+                    }
+                }
+                // Losing one chunk is survivable; ending the transcript is not.
+                Err(e) => warn!("Live downsampling failed for one chunk: {e}"),
+            }
+        }
+        out
+    }
+}
+
 /// Fast resampling optimized for transcription preprocessing
 ///
 pub fn write_audio_to_file(
@@ -736,4 +856,63 @@ pub fn write_transcript_json_to_file(
     std::fs::write(&file_path, json_string)?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the gain came straight from `TARGET_LUFS - loudness_global()`
+    /// with no bound. At the start of a recording that measurement is room
+    /// tone, so the first thing every meeting did was amplify its own noise
+    /// floor by up to ~70x and clip the opening sentence — the audio the model
+    /// most needs to read cleanly.
+    #[test]
+    fn quiet_room_tone_does_not_blow_up_the_gain() {
+        let mut norm = LoudnessNormalizer::new(1, 48_000).expect("normalizer");
+
+        // 2s of a very quiet noise floor, the way a meeting actually opens.
+        let mut floor = Vec::new();
+        for i in 0..96_000 {
+            floor.push(if i % 2 == 0 { 0.0005 } else { -0.0005 });
+        }
+        let out = norm.normalize_loudness(&floor);
+
+        let ceiling = 10_f32.powf(-1.0 / 20.0); // the stage's own true-peak limit
+        assert!(
+            out.iter().all(|s| s.abs() <= ceiling + 1e-6),
+            "output must stay inside the peak ceiling"
+        );
+
+        let max_gain = 10_f32.powf(MAX_GAIN_DB as f32 / 20.0);
+        assert!(
+            norm.gain_linear <= max_gain + 1e-3,
+            "gain reached {:.1}x, cap is {:.1}x",
+            norm.gain_linear,
+            max_gain
+        );
+    }
+
+    /// The glide is what keeps a gain correction from stepping mid-sentence.
+    #[test]
+    fn gain_moves_gradually_rather_than_stepping() {
+        let mut norm = LoudnessNormalizer::new(1, 48_000).expect("normalizer");
+        norm.target_gain = 8.0;
+        norm.gain_linear = 1.0;
+
+        norm.normalize_loudness(&vec![0.0f32; 512]);
+        assert!(
+            norm.gain_linear < 1.5,
+            "gain jumped to {:.2} in 512 samples; the glide is not applied",
+            norm.gain_linear
+        );
+
+        // ...but it does get there.
+        norm.normalize_loudness(&vec![0.0f32; 48_000]);
+        assert!(
+            norm.gain_linear > 5.0,
+            "gain only reached {:.2} after a second; the glide is too slow to track a speaker",
+            norm.gain_linear
+        );
+    }
 }

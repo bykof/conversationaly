@@ -10,7 +10,7 @@ use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolat
 
 use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
-use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
+use super::audio_processing::{audio_to_mono, HighPassFilter, LoudnessNormalizer, NoiseSuppressionProcessor, StreamingDownsampler16k};
 
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
@@ -37,21 +37,30 @@ struct AudioMixerRingBuffer {
     sys_last: Option<std::time::Instant>,
 }
 
+/// How much audio is mixed at a time. This is the pipeline's latency floor:
+/// nothing reaches the transcription model until a whole window is ready.
+///
+/// It was 600ms while the comment above it claimed 50ms, which put more than
+/// half a second of dead time in front of every live transcript.
+const MIX_WINDOW_MS: f32 = 50.0;
+
+/// How much un-mixed audio a stream may bank before the oldest is evicted.
+///
+/// Deliberately a duration and not a multiple of the window: capacity has to
+/// cover how long the *other* stream can be late (see STREAM_IDLE_AFTER), and
+/// tying it to the window size meant shrinking the window also shrank the
+/// jitter headroom.
+const MAX_BUFFER_MS: f32 = 2_000.0;
+
 impl AudioMixerRingBuffer {
     fn new(sample_rate: u32) -> Self {
-        // Use 50ms windows for mixing
-        let window_ms = 600.0;
-        let window_size_samples = (sample_rate as f32 * window_ms / 1000.0) as usize;
-
-        // CRITICAL FIX: Increase max buffer to 400ms for system audio stability
-        // System audio (especially Core Audio on macOS) can have significant jitter
-        // due to sample-by-sample streaming → batching → channel transmission
-        // Accounts for: RNNoise buffering + Core Audio jitter + processing delays
-        let max_buffer_size = window_size_samples * 8;  // 400ms (was 200ms)
+        let ms_to_samples = |ms: f32| (sample_rate as f32 * ms / 1000.0) as usize;
+        let window_size_samples = ms_to_samples(MIX_WINDOW_MS);
+        let max_buffer_size = ms_to_samples(MAX_BUFFER_MS);
 
         info!("🔊 Ring buffer initialized: window={}ms ({} samples), max={}ms ({} samples)",
-              window_ms, window_size_samples,
-              window_ms * 8.0, max_buffer_size);
+              MIX_WINDOW_MS, window_size_samples,
+              MAX_BUFFER_MS, max_buffer_size);
 
         Self {
             mic_buffer: VecDeque::with_capacity(max_buffer_size),
@@ -73,9 +82,12 @@ impl AudioMixerRingBuffer {
     /// A stream is "live" while it is still handing us audio. Anything quieter
     /// than this for longer is treated as absent (no device, stopped stream,
     /// disconnected headset) and mixed as silence rather than waited for.
-    /// Generous on purpose: capture callbacks arrive every 10-85ms, so a full
-    /// second of nothing means the stream really is gone, not just jittery.
-    const STREAM_IDLE_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+    ///
+    /// This is also the worst case the live transcript can stall for, because
+    /// can_mix() waits for every live stream. Capture callbacks arrive every
+    /// 10-85ms, so 250ms is still 3x the slowest healthy interval while capping
+    /// a silent-tap stall at a quarter second instead of a full one.
+    const STREAM_IDLE_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
 
     fn is_live(last: Option<std::time::Instant>) -> bool {
         last.is_some_and(|t| t.elapsed() < Self::STREAM_IDLE_AFTER)
@@ -108,16 +120,6 @@ impl AudioMixerRingBuffer {
     }
 
     fn add_samples(&mut self, device_type: DeviceType, samples: Vec<f32>) {
-        // Log buffer health periodically for diagnostics
-        static mut SAMPLE_COUNTER: u64 = 0;
-        unsafe {
-            SAMPLE_COUNTER += 1;
-            if SAMPLE_COUNTER % 200 == 0 {
-                debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
-                       self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
-            }
-        }
-
         match device_type {
             DeviceType::Microphone => {
                 self.mic_in += samples.len() as u64;
@@ -168,9 +170,23 @@ impl AudioMixerRingBuffer {
         let mic_full = self.mic_buffer.len() >= self.window_size_samples;
         let sys_full = self.system_buffer.len() >= self.window_size_samples;
 
-        (mic_full || sys_full)
-            && (mic_full || !Self::is_live(self.mic_last))
-            && (sys_full || !Self::is_live(self.sys_last))
+        // Waiting for a live stream sets the mixer's output rate to the SLOWER
+        // of the two streams. If one really does deliver below its nominal rate,
+        // the faster one's buffer grows until add_samples() evicts its oldest
+        // samples — audio that was captured, never mixed, and is now gone from
+        // both the transcript and the WAV, for the rest of the meeting.
+        //
+        // So: once a buffer reaches capacity, stop waiting. Padding the short
+        // side with silence loses nothing; evicting the long side loses speech.
+        // This only engages at capacity and stops as soon as the late stream
+        // catches up.
+        let backlogged = self.mic_buffer.len() >= self.max_buffer_size
+            || self.system_buffer.len() >= self.max_buffer_size;
+
+        let both_ready = (mic_full || !Self::is_live(self.mic_last))
+            && (sys_full || !Self::is_live(self.sys_last));
+
+        (mic_full || sys_full) && (both_ready || backlogged)
     }
 
     fn extract_window(&mut self) -> Option<(Vec<f32>, Vec<f32>)> {
@@ -233,6 +249,26 @@ impl AudioMixerRingBuffer {
         Some((mic_window, sys_window))
     }
 
+    /// Everything still buffered once input has ended, padded to a common
+    /// length. Returns None when both buffers are already empty.
+    ///
+    /// Only legitimate at end of stream: mid-recording, a short buffer means
+    /// its samples have not arrived yet, and padding them is the bug can_mix()
+    /// exists to prevent.
+    fn drain_tail(&mut self) -> Option<(Vec<f32>, Vec<f32>)> {
+        if self.mic_buffer.is_empty() && self.system_buffer.is_empty() {
+            return None;
+        }
+
+        let len = self.mic_buffer.len().max(self.system_buffer.len());
+        let mut mic: Vec<f32> = self.mic_buffer.drain(..).collect();
+        let mut sys: Vec<f32> = self.system_buffer.drain(..).collect();
+        mic.resize(len, 0.0);
+        sys.resize(len, 0.0);
+
+        info!("🔊 Draining {} samples of tail audio at end of recording", len);
+        Some((mic, sys))
+    }
 }
 
 /// Simple audio mixer without aggressive ducking
@@ -244,38 +280,24 @@ impl ProfessionalAudioMixer {
         Self
     }
 
+    /// Sum the two streams, clamped to the valid float-PCM range.
+    ///
+    /// The old code wrote `sum / sum.abs()` under a comment promising
+    /// "proportional scaling" that "avoids hard clipping" — that expression is
+    /// `signum()`, so every over-range sample became exactly ±1.0. It was hard
+    /// clipping, described as its own opposite. Kept as an honest clamp: the
+    /// mic arrives normalised to -23 LUFS, so overs are rare and a limiter here
+    /// would only pump.
     fn mix_window(&mut self, mic_window: &[f32], sys_window: &[f32]) -> Vec<f32> {
-        // Handle different lengths (already padded by extract_window, but defensive)
+        // Both windows are the same length (extract_window pads), but stay
+        // defensive: a length mismatch must not truncate the mix.
         let max_len = mic_window.len().max(sys_window.len());
         let mut mixed = Vec::with_capacity(max_len);
 
-        // Professional mixing with soft scaling to prevent distortion
-        // Uses proportional scaling instead of hard clamping to avoid artifacts
         for i in 0..max_len {
             let mic = mic_window.get(i).copied().unwrap_or(0.0);
             let sys = sys_window.get(i).copied().unwrap_or(0.0);
-
-            // Pre-scale system audio to 70% to leave headroom
-            // This prevents constant soft scaling which can cause pumping artifacts
-            // Mic is normalized to -23 LUFS (already optimal), system needs reduction
-            let sys_scaled = sys * 1.0;
-            let _mic_scaled = mic * 0.8;  // Reserved for future mic scaling
-
-            // Sum without ducking - mic stays at full volume, system slightly reduced
-            let sum = mic + sys_scaled;
-
-            // CRITICAL FIX: Soft scaling prevents distortion artifacts
-            // If the sum would exceed ±1.0, scale down PROPORTIONALLY
-            // This avoids hard clipping distortion that sounds like "radio breaks"
-            let sum_abs = sum.abs();
-            let mixed_sample = if sum_abs > 1.0 {
-                // Scale down to fit within ±1.0
-                sum / sum_abs
-            } else {
-                sum
-            };
-
-            mixed.push(mixed_sample);
+            mixed.push((mic + sys).clamp(-1.0, 1.0));
         }
 
         mixed
@@ -291,7 +313,6 @@ pub struct AudioCapture {
     channels: u16,
     chunk_counter: Arc<std::sync::atomic::AtomicU64>,
     device_type: DeviceType,
-    recording_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
     needs_resampling: bool,  // Flag if resampling is required
     // CRITICAL FIX: Persistent resampler to preserve energy across chunks
     resampler: Arc<std::sync::Mutex<Option<SincFixedIn<f32>>>>,
@@ -335,7 +356,6 @@ impl AudioCapture {
         sample_rate: u32,
         channels: u16,
         device_type: DeviceType,
-        recording_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
     ) -> Self {
         // CRITICAL FIX: Detect if resampling is needed
         // Pipeline expects 48kHz, but Bluetooth devices often report 8kHz, 16kHz, or 44.1kHz
@@ -478,7 +498,6 @@ impl AudioCapture {
             channels,
             chunk_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             device_type,
-            recording_sender,
             needs_resampling,
             resampler: Arc::new(std::sync::Mutex::new(resampler)),
             resampler_input_buffer: Arc::new(std::sync::Mutex::new(Vec::with_capacity(RESAMPLER_CHUNK_SIZE * 2))),
@@ -831,10 +850,11 @@ impl AudioCapture {
 pub struct AudioPipeline {
     receiver: mpsc::UnboundedReceiver<AudioChunk>,
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
-    state: Arc<RecordingState>,
     // Audio forwarded to the transcription stream so far, in 16kHz samples.
     // Drives recording-relative timestamps without a wall clock.
     transcription_samples_sent: u64,
+    // The same count for the recording file, at the pipeline's sample rate.
+    mixed_samples_sent: u64,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -845,6 +865,8 @@ pub struct AudioPipeline {
     // PROFESSIONAL AUDIO MIXING: Ring buffer + RMS-based mixer
     ring_buffer: AudioMixerRingBuffer,
     mixer: ProfessionalAudioMixer,
+    // Stateful 48kHz -> 16kHz conversion for the transcription stream.
+    downsampler: StreamingDownsampler16k,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
 }
@@ -853,7 +875,6 @@ impl AudioPipeline {
     pub fn new(
         receiver: mpsc::UnboundedReceiver<AudioChunk>,
         transcription_sender: mpsc::UnboundedSender<AudioChunk>,
-        state: Arc<RecordingState>,
         target_chunk_duration_ms: u32,
         sample_rate: u32,
         mic_device_name: String,
@@ -887,8 +908,8 @@ impl AudioPipeline {
         Self {
             receiver,
             transcription_sender,
-            state,
             transcription_samples_sent: 0,
+            mixed_samples_sent: 0,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -899,6 +920,7 @@ impl AudioPipeline {
             // Initialize professional audio mixing
             ring_buffer,
             mixer,
+            downsampler: StreamingDownsampler16k::new(sample_rate),
             recording_sender_for_mixed: None,  // Will be set by manager
         }
     }
@@ -916,18 +938,26 @@ impl AudioPipeline {
         // Previous bug: Loop checked `while self.state.is_recording()` which caused early exit when
         // stop_recording() was called, losing flush signals and remaining chunks in the pipeline
         loop {
-            // Receive audio chunks with timeout
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(50), // Shorter timeout for responsiveness
-                self.receiver.recv()
-            ).await {
-                Ok(Some(chunk)) => {
+            // No timeout: mixing only ever has something to do when a chunk
+            // arrives, so the old 50ms timeout woke this task ~20 times a second
+            // to run `continue`.
+            match self.receiver.recv().await {
+                Some(chunk) => {
                     // PERFORMANCE: Check for flush signal (special chunk with ID >= u64::MAX - 10)
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {
-                        info!("📥 Received FLUSH signal #{} - flushing VAD processor", u64::MAX - chunk.chunk_id);
-                        self.flush_remaining_audio()?;
-                        // Continue processing to handle any remaining chunks
+                        info!("📥 Received FLUSH signal #{}", u64::MAX - chunk.chunk_id);
+                        // Only complete windows here, never the tail: more audio
+                        // can still arrive, and padding a stream that is merely
+                        // late is the bug can_mix() exists to prevent. The tail
+                        // is drained once, after the loop ends for good.
+                        //
+                        // Worth doing at all because a stream that was late when
+                        // its last chunk landed may have since crossed
+                        // STREAM_IDLE_AFTER, which unblocks can_mix().
+                        while let Some((mic, sys)) = self.ring_buffer.extract_window() {
+                            self.forward_mixed(&mic, &sys, &mut transcription_dead);
+                        }
                         continue;
                     }
 
@@ -963,90 +993,106 @@ impl AudioPipeline {
                     // System audio remains raw
                     self.ring_buffer.add_samples(chunk.device_type.clone(), chunk.data);
 
-                    // STEP 2: Mix audio in fixed windows when both streams have sufficient data
-                    while self.ring_buffer.can_mix() {
-                        if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
-                            // Simple mixing without aggressive ducking
-                            let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
-
-                            // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -23 LUFS
-                            // This is broadcast-standard loudness (Netflix/YouTube/Spotify level)
-                            // System audio at natural levels
-                            // Previous 2x gain was causing excessive limiting/distortion
-                            let mixed_with_gain = mixed_clean;
-
-                            // STEP 3: Send mixed audio for transcription.
-                            //
-                            // No VAD gating: the transcription engine holds one
-                            // continuous stream for the whole meeting and does
-                            // its own endpointing, so handing it only speech
-                            // segments would break its context across pauses.
-                            let samples_16k = super::vad::resample_to_16k(&mixed_with_gain, self.sample_rate);
-                            if !samples_16k.is_empty() {
-                                let transcription_chunk = AudioChunk {
-                                    data: samples_16k,
-                                    sample_rate: 16000,
-                                    timestamp: self.transcription_samples_sent as f64 / 16000.0,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,  // Mixed audio
-                                };
-                                self.transcription_samples_sent += transcription_chunk.data.len() as u64;
-
-                                if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                    // The receiver is gone for the rest of the meeting once
-                                    // the transcription task exits, and this fires on every
-                                    // mixing window — say it once, not twice a second.
-                                    if !transcription_dead {
-                                        transcription_dead = true;
-                                        warn!("Transcription stopped receiving audio ({}); recording continues without a live transcript", e);
-                                    }
-                                } else {
-                                    self.chunk_id_counter += 1;
-                                }
-                            }
-
-                            // STEP 4: Send mixed audio for recording (WAV file)
-                            if let Some(ref sender) = self.recording_sender_for_mixed {
-                                let recording_chunk = AudioChunk {
-                                    data: mixed_with_gain.clone(),
-                                    sample_rate: self.sample_rate,
-                                    timestamp: chunk.timestamp,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,  // Mixed audio
-                                };
-                                let _ = sender.send(recording_chunk);
-                            }
-                        }
+                    // STEP 2: Mix and forward every window that is now complete.
+                    while let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                        self.forward_mixed(&mic_window, &sys_window, &mut transcription_dead);
                     }
                 }
-                Ok(None) => {
+                None => {
                     info!("Audio pipeline: sender closed after processing {} chunks", self.processed_chunks);
                     break;
-                }
-                Err(_) => {
-                    // Timeout - just continue, VAD handles all segmentation
-                    continue;
                 }
             }
         }
 
-        // Flush any remaining VAD segments
-        self.flush_remaining_audio()?;
+        self.flush_remaining_audio(&mut transcription_dead)?;
 
         info!("VAD-driven audio pipeline ended");
         Ok(())
     }
 
-    fn flush_remaining_audio(&mut self) -> Result<()> {
+    /// Mix one window and hand it to the transcriber and the recording file.
+    ///
+    /// The mic arrives normalised to -23 LUFS from the capture stage and system
+    /// audio at its natural level, so there is no post-mix gain: the 2x that
+    /// used to be applied here only drove the limiter.
+    fn forward_mixed(
+        &mut self,
+        mic_window: &[f32],
+        sys_window: &[f32],
+        transcription_dead: &mut bool,
+    ) {
+        let mixed = self.mixer.mix_window(mic_window, sys_window);
+
+        // Transcription gets a continuous 16kHz stream, not speech segments:
+        // the engine holds one stream open for the whole meeting and does its
+        // own endpointing, so gating on VAD here would break its context
+        // across every pause.
+        let samples_16k = self.downsampler.push(&mixed);
+        if !samples_16k.is_empty() {
+            let transcription_chunk = AudioChunk {
+                data: samples_16k,
+                sample_rate: 16000,
+                timestamp: self.transcription_samples_sent as f64 / 16000.0,
+                chunk_id: self.chunk_id_counter,
+                device_type: DeviceType::Microphone, // Mixed audio
+            };
+            self.transcription_samples_sent += transcription_chunk.data.len() as u64;
+
+            if let Err(e) = self.transcription_sender.send(transcription_chunk) {
+                // The receiver is gone for the rest of the meeting once the
+                // transcription task exits, and this fires on every mixing
+                // window — say it once, not twenty times a second.
+                if !*transcription_dead {
+                    *transcription_dead = true;
+                    warn!("Transcription stopped receiving audio ({}); recording continues without a live transcript", e);
+                }
+            } else {
+                self.chunk_id_counter += 1;
+            }
+        }
+
+        // The WAV file gets the same mixed audio, timestamped by how much mixed
+        // audio has been produced. It used to carry whichever input chunk
+        // happened to trigger this window, which is a different stream's clock.
+        if let Some(ref sender) = self.recording_sender_for_mixed {
+            let recording_chunk = AudioChunk {
+                timestamp: self.mixed_samples_sent as f64 / self.sample_rate as f64,
+                sample_rate: self.sample_rate,
+                chunk_id: self.chunk_id_counter,
+                device_type: DeviceType::Microphone, // Mixed audio
+                data: mixed,
+            };
+            self.mixed_samples_sent += recording_chunk.data.len() as u64;
+            let _ = sender.send(recording_chunk);
+        } else {
+            self.mixed_samples_sent += mixed.len() as u64;
+        }
+    }
+
+    /// Drain whatever never made up a whole window.
+    ///
+    /// This used to be a log line and nothing else, so the tail of every
+    /// recording — up to a full window per stream, and more whenever can_mix()
+    /// had been waiting on a late stream — was mixed into neither the
+    /// transcript nor the WAV. The end of a meeting is the part people go back
+    /// and check.
+    ///
+    /// Zero-padding the shorter side is correct here and only here: input has
+    /// genuinely ended, so the missing samples are never going to arrive.
+    fn flush_remaining_audio(&mut self, transcription_dead: &mut bool) -> Result<()> {
+        while let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+            self.forward_mixed(&mic_window, &sys_window, transcription_dead);
+        }
+        if let Some((mic_tail, sys_tail)) = self.ring_buffer.drain_tail() {
+            self.forward_mixed(&mic_tail, &sys_tail, transcription_dead);
+        }
+
         info!(
-            "Flushing remaining audio from pipeline (processed {} chunks, {:.1}s sent for transcription)",
+            "Flushed remaining audio from pipeline (processed {} chunks, {:.1}s sent for transcription)",
             self.processed_chunks,
             self.transcription_samples_sent as f64 / 16000.0
         );
-
-        // Nothing to flush on the transcription side: audio is forwarded as soon
-        // as it is mixed, and the stream's own finalize() drains what the model
-        // still holds. Dropping transcription_sender ends the stream loop.
         Ok(())
     }
 
@@ -1094,7 +1140,6 @@ impl AudioPipelineManager {
         let mut pipeline = AudioPipeline::new(
             audio_receiver,
             transcription_sender,
-            state.clone(),
             target_chunk_duration_ms,
             sample_rate,
             mic_device_name,
@@ -1215,6 +1260,41 @@ mod tests {
 
         assert_eq!(rb.mic_pad, 0, "a live mic must never be zero-padded");
         assert_eq!(rb.windows, 5, "window clock must follow the slower live stream");
+    }
+
+    /// ...and a stream that is merely SLOW must not cost the other one its
+    /// audio. Waiting on it throttles the mixer to the slow stream's rate, so
+    /// the healthy stream backs up; the moment it hits capacity, add_samples()
+    /// starts deleting its oldest samples. Mixing early and padding the slow
+    /// side is lossless by comparison.
+    #[test]
+    fn a_backlogged_stream_is_mixed_rather_than_evicted() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        let w = rb.window_size_samples;
+
+        // Mic delivers honestly; the system tap delivers a trickle but stays
+        // "live", so can_mix() would otherwise wait for it indefinitely.
+        let mut fed = 0u64;
+        for _ in 0..200 {
+            rb.add_samples(DeviceType::Microphone, vec![0.5; w]);
+            rb.add_samples(DeviceType::System, vec![0.25; 8]);
+            fed += w as u64;
+            while rb.can_mix() {
+                rb.extract_window().expect("can_mix said yes");
+            }
+        }
+
+        let mixed = rb.windows * w as u64;
+        let still_buffered = rb.mic_buffer.len() as u64;
+        assert_eq!(
+            mixed + still_buffered,
+            fed,
+            "every microphone sample must end up either mixed or still buffered, never dropped"
+        );
+        assert!(
+            rb.mic_buffer.len() <= rb.max_buffer_size,
+            "backlog must stay bounded"
+        );
     }
 
     /// ...but a stream that never starts (no system device, denied permission)

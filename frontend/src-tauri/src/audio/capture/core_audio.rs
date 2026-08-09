@@ -46,7 +46,6 @@ struct AudioContext {
     format: arc::R<av::AudioFormat>,
     producer: HeapProd<f32>,
     waker_state: Arc<Mutex<WakerState>>,
-    consecutive_drops: Arc<AtomicU32>,
     should_terminate: Arc<AtomicBool>,
 }
 
@@ -272,7 +271,6 @@ impl CoreAudioCapture {
             format,
             producer,
             waker_state: waker_state.clone(),
-            consecutive_drops: Arc::new(AtomicU32::new(0)),
             should_terminate: Arc::new(AtomicBool::new(false)),
         });
 
@@ -300,15 +298,18 @@ fn process_audio_data(ctx: &mut AudioContext, data: &[f32]) {
     let buffer_size = data.len();
     let pushed = ctx.producer.push_slice(data);
 
+    // Overruns used to be counted, and 11 consecutive ones killed the tap for
+    // the rest of the meeting — silently. Nothing restarts it, nothing reports
+    // it, and the mixer simply carries on mic-only once the stream goes stale,
+    // so a few seconds of backpressure cost the user every remaining minute of
+    // system audio with no way to tell. Backpressure here is transient by
+    // nature; dropping the samples and saying so is the whole correct response.
     if pushed < buffer_size {
-        let consecutive = ctx.consecutive_drops.fetch_add(1, Ordering::AcqRel) + 1;
-
-        if consecutive > 10 {
-            ctx.should_terminate.store(true, Ordering::Release);
-            return;
-        }
-    } else {
-        ctx.consecutive_drops.store(0, Ordering::Release);
+        warn!(
+            "CoreAudio tap dropped {} of {} samples: the consumer is behind",
+            buffer_size - pushed,
+            buffer_size
+        );
     }
 
     if pushed > 0 {
@@ -336,26 +337,37 @@ impl CoreAudioStream {
     }
 }
 
+/// Samples handed over per poll. At 48kHz this is ~21ms of audio.
+///
+/// This stream used to yield ONE f32 per poll, so both of its consumers had to
+/// reassemble batches sample by sample. `pop_slice` is what the ring buffer is
+/// for, and yielding the batch deletes that reassembly from stream.rs and
+/// capture/system.rs both. The per-sample cost was small — an SPSC `try_pop` is
+/// a couple of atomics — so treat this as the simplification it is, not as a
+/// fix for a stall.
+#[cfg(target_os = "macos")]
+const POLL_BATCH_SAMPLES: usize = 1024;
+
 #[cfg(target_os = "macos")]
 impl Stream for CoreAudioStream {
-    type Item = f32;
+    type Item = Vec<f32>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        // Try to pop a sample from the ring buffer
-        if let Some(sample) = self.consumer.try_pop() {
-            return Poll::Ready(Some(sample));
+        let mut batch = vec![0.0f32; POLL_BATCH_SAMPLES];
+
+        let popped = self.consumer.pop_slice(&mut batch);
+        if popped > 0 {
+            batch.truncate(popped);
+            return Poll::Ready(Some(batch));
         }
 
         // Check if we should terminate
         if self._ctx.should_terminate.load(Ordering::Acquire) {
             warn!("Stream terminating due to buffer pressure");
-            return match self.consumer.try_pop() {
-                Some(sample) => Poll::Ready(Some(sample)),
-                None => Poll::Ready(None),
-            };
+            return Poll::Ready(None);
         }
 
         // No data available, register waker and return pending
@@ -404,7 +416,7 @@ impl CoreAudioStream {
 
 #[cfg(not(target_os = "macos"))]
 impl Stream for CoreAudioStream {
-    type Item = f32;
+    type Item = Vec<f32>;
 
     fn poll_next(
         self: Pin<&mut Self>,
@@ -432,8 +444,8 @@ mod tests {
         // Collect some samples
         let mut sample_count = 0;
         while sample_count < 48000 { // 1 second at 48kHz
-            if let Some(_sample) = stream.next().await {
-                sample_count += 1;
+            if let Some(batch) = stream.next().await {
+                sample_count += batch.len();
             }
         }
 

@@ -492,6 +492,14 @@ pub async fn stop_recording<R: Runtime>(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
+    // One stop at a time. Stopping takes as long as the decoder needs to drain,
+    // and a second Stop — the tray menu and the in-app button both reach here —
+    // used to walk straight past the IS_RECORDING check while the first was
+    // still awaiting, then take a manager that was already taken and race the
+    // first one's save. Holding the same lock start_recording takes also stops
+    // a new recording from beginning inside an unfinished shutdown.
+    let _engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
+
     // Check if recording is active
     if !IS_RECORDING.load(Ordering::SeqCst) {
         info!("Recording was not active");
@@ -538,15 +546,17 @@ pub async fn stop_recording<R: Runtime>(
         }
     }
 
-    // Step 1.5: Clean up transcript listener to release microphone
-    // Unlisten transcript-update event to prevent lingering references
-    {
-        use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
-            app.unlisten(listener_id);
-            info!("✅ Transcript-update listener removed");
-        }
-    }
+    // Put the manager back before waiting on the decoder.
+    //
+    // The whole point of the wait below is that the decoder is still emitting
+    // transcript-update for audio captured before Stop. Those events are
+    // persisted by the listener registered in start_recording, which reaches
+    // the manager through RECORDING_MANAGER — and taking it above left that
+    // listener looking at None. Everything the decoder produced while draining
+    // reached the UI and then vanished: absent from transcripts.json, absent
+    // from the transcript history a reload restores. The last thing said in
+    // every meeting is exactly what a decoder is still working on at Stop.
+    *RECORDING_MANAGER.lock().unwrap() = manager_for_cleanup;
 
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(
@@ -614,6 +624,16 @@ pub async fn stop_recording<R: Runtime>(
         info!("ℹ️ No transcription task found to wait for");
     }
 
+    // Only now is it safe to stop persisting transcript rows: the decoder has
+    // drained (or timed out), so nothing further is coming.
+    {
+        use tauri::Listener;
+        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
+            app.unlisten(listener_id);
+            info!("✅ Transcript-update listener removed");
+        }
+    }
+
     // Step 3: Now safely unload Whisper model after ALL chunks are processed
     let _ = app.emit(
         "recording-shutdown-progress",
@@ -657,6 +677,9 @@ pub async fn stop_recording<R: Runtime>(
             "progress": 90
         }),
     );
+
+    // Take the manager back for the final save, now that nothing else needs it.
+    let manager_for_cleanup = RECORDING_MANAGER.lock().unwrap().take();
 
     // Perform final cleanup with the manager if available
     let (meeting_folder, meeting_name) = if let Some(mut manager) = manager_for_cleanup {

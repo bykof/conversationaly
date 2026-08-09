@@ -10,6 +10,13 @@ interface UseAutoScrollProps {
     virtualizer?: Virtualizer<HTMLDivElement, Element>;
     virtualizationThreshold?: number;
     disableAutoScroll?: boolean; // Completely disable auto-scroll behavior (for meeting details page)
+    /**
+     * The volatile streaming tail rendered under the last committed segment.
+     *
+     * It has to be here because it grows the page without adding a segment, and
+     * following only `segments.length` left live text stranded below the fold.
+     */
+    liveText?: string;
 }
 
 interface UseAutoScrollReturn {
@@ -44,6 +51,7 @@ export function useAutoScroll({
     virtualizer,
     virtualizationThreshold = 10,
     disableAutoScroll = false,
+    liveText = '',
 }: UseAutoScrollProps): UseAutoScrollReturn {
     const useVirtualization = virtualizer && segments.length >= virtualizationThreshold;
     const [autoScroll, setAutoScroll] = useState(true);
@@ -51,12 +59,8 @@ export function useAutoScroll({
     const autoScrollRef = useRef(autoScroll);
     autoScrollRef.current = autoScroll;
 
-    // Track if user has manually scrolled (to disable auto-scroll temporarily)
-    const userScrolledRef = useRef(false);
     // Track if we're doing a programmatic scroll
     const isProgrammaticScrollRef = useRef(false);
-    // Track previous segment count to detect new segments
-    const prevSegmentCountRef = useRef(segments.length);
 
     /**
      * Check if the user is scrolled near the bottom
@@ -74,7 +78,6 @@ export function useAutoScroll({
         if (scrollRef.current) {
             isProgrammaticScrollRef.current = true;
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-            userScrolledRef.current = false;
             setAutoScroll(true);
 
             // Reset the flag after a small delay to account for scroll event propagation
@@ -103,18 +106,10 @@ export function useAutoScroll({
             }
 
             scrollTimeout = setTimeout(() => {
-                // Check if user is near bottom
-                const nearBottom = isNearBottom();
-
-                if (nearBottom) {
-                    // User scrolled to bottom - re-enable auto-scroll
-                    userScrolledRef.current = false;
-                    setAutoScroll(true);
-                } else {
-                    // User scrolled away from bottom - disable auto-scroll
-                    userScrolledRef.current = true;
-                    setAutoScroll(false);
-                }
+                // A real user scroll is the ONLY thing that decides whether we
+                // keep following. Deriving that from geometry anywhere else
+                // reads a page that is still growing (see below).
+                setAutoScroll(isNearBottom());
             }, 100);
         };
 
@@ -128,53 +123,54 @@ export function useAutoScroll({
         };
     }, [isNearBottom, scrollRef]);
 
-    // Auto-scroll to bottom when new segments arrive during recording
+    // Follow the transcript as it grows, for as long as the user wants us to.
+    //
+    // This used to re-check isNearBottom() here and bail out when it was false,
+    // which is the bug that made live transcription look broken. By the time
+    // this effect runs the new content is already in the DOM, so the container
+    // is *already* further than SCROLL_THRESHOLD from the bottom — that is the
+    // whole reason we are about to scroll. Two segments landing between paints
+    // was enough to fail the check, and once it failed the view never moved
+    // again, so nothing generated a scroll event, so nothing ever re-armed it.
+    // The transcript kept arriving and kept rendering; it was just permanently
+    // below the fold.
+    //
+    // Whether to follow is a question about the user's intent, and only the
+    // user's own scrolling answers it. That lives in `autoScroll`, set by the
+    // scroll handler above.
     useEffect(() => {
-        // EARLY RETURN: If auto-scroll is completely disabled (e.g., meeting details page)
-        if (disableAutoScroll) {
-            return;
+        if (disableAutoScroll) return;
+        if (!autoScrollRef.current || !isRecording || isPaused) return;
+        if (segments.length === 0 && !liveText) return;
+
+        isProgrammaticScrollRef.current = true;
+
+        if (useVirtualization && virtualizer) {
+            // Large offset rather than the last index: the live tail is rendered
+            // outside the virtualizer, so the true bottom is past its total size.
+            virtualizer.scrollToOffset(virtualizer.getTotalSize() + 1000, { align: "end" });
         }
-
-        const segmentCount = segments.length;
-        const prevCount = prevSegmentCountRef.current;
-        const hasNewSegments = segmentCount > prevCount;
-
-        // Update the ref for next comparison
-        prevSegmentCountRef.current = segmentCount;
-
-        // Only scroll if new segments arrived AND user is currently at bottom
-        // Check isNearBottom() immediately to avoid race conditions with the debounced scroll handler
-        if (hasNewSegments && autoScrollRef.current && isRecording && !isPaused && segmentCount > 0) {
-            // Check if user is at bottom RIGHT NOW before scrolling
-            const isCurrentlyAtBottom = isNearBottom();
-            if (!isCurrentlyAtBottom) {
-                // User has scrolled up - don't auto-scroll
-                return;
-            }
-
-            isProgrammaticScrollRef.current = true;
-
-            if (useVirtualization && virtualizer) {
-                // Use scrollToOffset with a large value to ensure we're at the bottom
-                const totalSize = virtualizer.getTotalSize();
-                virtualizer.scrollToOffset(totalSize + 1000, { align: "end" });
-
-                // Also set scrollTop directly as backup after virtualizer updates
-                setTimeout(() => {
-                    if (scrollRef.current) {
-                        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                    }
-                }, 50);
-            } else if (scrollRef.current) {
+        // Always settle with a direct scrollTop after layout: it is the only
+        // measurement that accounts for both virtual rows and the live tail.
+        const settle = setTimeout(() => {
+            if (scrollRef.current) {
                 scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
             }
+            isProgrammaticScrollRef.current = false;
+        }, 50);
 
-            // Reset the flag after a longer delay for virtualization
-            setTimeout(() => {
-                isProgrammaticScrollRef.current = false;
-            }, 150);
-        }
-    }, [segments.length, isRecording, isPaused, useVirtualization, virtualizer, scrollRef, isNearBottom, disableAutoScroll]);
+        return () => clearTimeout(settle);
+    }, [
+        segments.length,
+        liveText,
+        autoScroll,
+        isRecording,
+        isPaused,
+        useVirtualization,
+        virtualizer,
+        scrollRef,
+        disableAutoScroll,
+    ]);
 
     // Auto-scroll to active segment (when clicking on search results, etc.)
     useEffect(() => {

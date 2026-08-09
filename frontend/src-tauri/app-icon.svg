@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Conversationaly app icon. Source of truth for every generated size:
+      cd frontend && npx @tauri-apps/cli icon src-tauri/app-icon.svg
+
+    The mark is an aperture: a closed ring with a single gap, solid centre.
+    It reads as a "C" monogram and as a record button, and the closed loop is
+    the privacy claim — audio goes in, nothing leaves. Same glyph as
+    src/components/Logo.tsx <Mark>, where the centre dot turns red while live.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#525310"/>
+      <stop offset="1" stop-color="#3A3B00"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Tile inset to the macOS icon grid: 824px body on a 1024px canvas. -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#tile)"/>
+
+  <!-- Glyph: the 24×24 mark scaled to 460px and centred. -->
+  <g transform="translate(282 282) scale(19.166667)">
+    <path d="M18.28 6.73A8.2 8.2 0 1 0 18.28 17.27"
+          fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round"/>
+    <circle cx="12" cy="12" r="3.4" fill="#FFFFFF"/>
+  </g>
+</svg>

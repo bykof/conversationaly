@@ -128,7 +128,6 @@ impl EnhancedAudioStreamManager {
                 mic_device,
                 self.state.clone(),
                 DeviceType::Input,
-                recording_sender.clone(),
             ).await?;
             self.microphone_stream = Some(mic_stream);
         }
@@ -153,7 +152,6 @@ impl EnhancedAudioStreamManager {
                     sys_device,
                     self.state.clone(),
                     DeviceType::Output,
-                    recording_sender,
                 ).await?;
                 // Note: We'd need to store this differently or modify the structure
                 warn!("Fallback ScreenCaptureKit stream created but not stored in enhanced manager");

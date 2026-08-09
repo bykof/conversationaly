@@ -37,7 +37,6 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Refs for transcript management
   const transcriptsRef = useRef<Transcript[]>(transcripts);
-  const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
 
@@ -46,43 +45,13 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     transcriptsRef.current = transcripts;
   }, [transcripts]);
 
-  // Smart auto-scroll: Track user scroll position
-  useEffect(() => {
-    const handleScroll = () => {
-      const container = transcriptContainerRef.current;
-      if (!container) return;
-
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      const isAtBottom = scrollTop + clientHeight >= scrollHeight - 10; // 10px tolerance
-      isUserAtBottomRef.current = isAtBottom;
-    };
-
-    const container = transcriptContainerRef.current;
-    if (container) {
-      container.addEventListener('scroll', handleScroll);
-      return () => container.removeEventListener('scroll', handleScroll);
-    }
-  }, []);
-
-  // Auto-scroll when transcripts change (only if user is at bottom)
-  useEffect(() => {
-    // Only auto-scroll if user was at the bottom before new content
-    if (isUserAtBottomRef.current && transcriptContainerRef.current) {
-      // Wait for Framer Motion animation to complete (150ms) before scrolling
-      // This ensures scrollHeight includes the full rendered height of the new transcript
-      const scrollTimeout = setTimeout(() => {
-        const container = transcriptContainerRef.current;
-        if (container) {
-          container.scrollTo({
-            top: container.scrollHeight,
-            behavior: 'smooth'
-          });
-        }
-      }, 150); // Match Framer Motion transition duration
-
-      return () => clearTimeout(scrollTimeout);
-    }
-  }, [transcripts]);
+  // A second auto-scroll implementation used to live here, driving
+  // `transcriptContainerRef`. That element is `overflow-hidden` and its own
+  // comment says it does not scroll — VirtualizedTranscriptView owns the scroll
+  // container — so its scrollTo() was a no-op and its scroll listener could
+  // never fire. Its only real effect was to make scrolling look handled while
+  // the live transcript sat below the fold. One implementation, in
+  // useAutoScroll, is the whole feature.
 
   // Initialize IndexedDB and listen for recording-started/stopped events
   useEffect(() => {

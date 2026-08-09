@@ -96,7 +96,9 @@ Raw Audio (Mic + System)
 
 **Key Insight**: The pipeline performs **professional audio mixing** (RMS-based ducking, clipping prevention) for recording, and forwards the same mixed audio continuously (resampled to 16kHz) to a single long-lived transcription stream.
 
-**Live transcription has two paths, chosen at recording start** (`audio/transcription/stream_worker.rs`):
+**Live transcription is a hexagon** (`audio/transcription/`). `ports.rs` defines the two boundaries — `Transcriber` (a decoding backend) and `TranscriptSink` (where text and warnings go). `service.rs` is the use case and depends on nothing else, so it is testable without Tauri, a model, or an audio device. `adapters/` holds the outside: `streaming.rs`, `segmented.rs`, `tauri_sink.rs`. `mod.rs` is the composition root that picks a backend.
+
+**Two decode paths, chosen at recording start:**
 
 1. **Streaming** — for streaming-native models. One `transcribe_cpp::Stream` stays open for the whole meeting. Its text splits into `committed` (append-only, never rewritten -> persisted as transcript rows via `transcript-update`) and `tentative` (volatile -> emitted as `transcript-partial`, never saved).
 2. **VAD + batch** — speech is segmented and each segment decoded whole. No `transcript-partial` events, and its latency floor is the segment length (`LIVE_MAX_SEGMENT_SAMPLES`, 8s). Two decoders share the loop, behind `enum Decoder`, since segmentation and backlog policy are identical:
@@ -423,4 +425,6 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
 **Transcription**:
 - [frontend/src-tauri/src/transcribe_engine/engine.rs](frontend/src-tauri/src/transcribe_engine/engine.rs) - Model management, download, batch transcription
-- [frontend/src-tauri/src/audio/transcription/stream_worker.rs](frontend/src-tauri/src/audio/transcription/stream_worker.rs) - Live streaming transcription
+- [frontend/src-tauri/src/audio/transcription/ports.rs](frontend/src-tauri/src/audio/transcription/ports.rs) - `Transcriber` / `TranscriptSink`, the live-transcription boundaries
+- [frontend/src-tauri/src/audio/transcription/service.rs](frontend/src-tauri/src/audio/transcription/service.rs) - The live-transcription use case (infrastructure-free, unit-tested)
+- [frontend/src-tauri/src/audio/transcription/adapters/](frontend/src-tauri/src/audio/transcription/adapters/) - transcribe.cpp streaming, VAD+batch, and the Tauri event sink

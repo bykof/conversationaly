@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+  <!-- Favicon. Next.js app-router convention; takes precedence over favicon.ico. -->
+  <rect width="24" height="24" rx="5" fill="#414200"/>
+  <g transform="translate(12 12) scale(0.82) translate(-12 -12)">
+    <path d="M18.28 6.73A8.2 8.2 0 1 0 18.28 17.27"
+          fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="round"/>
+    <circle cx="12" cy="12" r="3.4" fill="#FFFFFF"/>
+  </g>
+</svg>

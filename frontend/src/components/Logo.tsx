@@ -5,10 +5,14 @@ import { About } from './About';
 import { cn } from '@/lib/utils';
 
 /**
- * The mark is the pipeline: two capture streams (microphone, system audio)
- * converging into a single transcript. The junction dot is the capture point —
- * it turns red while recording, so the brand mark *is* the live indicator
- * rather than a decoration sitting next to one.
+ * The mark is an aperture: a closed ring with a single gap, solid centre. It
+ * reads as the "C" monogram and as a record button, and the closed loop is the
+ * privacy claim — audio goes in, nothing leaves. The centre dot turns red while
+ * recording, so the brand mark *is* the live indicator rather than a decoration
+ * sitting next to one.
+ *
+ * Same geometry as src-tauri/app-icon.svg, which generates the app icons. Edit
+ * both, or the dock and the sidebar drift apart.
  */
 export function Mark({
   live = false,
@@ -24,24 +28,19 @@ export function Mark({
       aria-hidden="true"
       className={cn('h-5 w-5', className)}
     >
-      <g
+      <path
+        d="M18.28 6.73A8.2 8.2 0 1 0 18.28 17.27"
         stroke="currentColor"
-        strokeWidth={1.9}
+        strokeWidth={2.8}
         strokeLinecap="round"
         fill="none"
-      >
-        {/* Two capture streams in… */}
-        <path d="M2.5 6.75C6 6.75 6.6 12 9.5 12" opacity={0.72} />
-        <path d="M2.5 17.25C6 17.25 6.6 12 9.5 12" opacity={0.72} />
-        {/* …one transcript out. */}
-        <path d="M14.4 12H21.5" />
-      </g>
+      />
       <circle
-        cx={11.9}
+        cx={12}
         cy={12}
-        r={2.3}
+        r={3.4}
         className={cn(live ? 'fill-danger' : 'fill-current', live && 'animate-live')}
-        style={{ transformOrigin: '11.9px 12px' }}
+        style={{ transformOrigin: '12px 12px' }}
       />
     </svg>
   );

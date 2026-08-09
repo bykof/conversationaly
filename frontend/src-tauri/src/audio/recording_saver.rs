@@ -55,7 +55,22 @@ pub struct RecordingSaver {
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
+    /// When transcripts.json was last written, so the incremental save can be
+    /// rate-limited. See [`RecordingSaver::add_transcript_segment`].
+    last_transcript_write: Arc<Mutex<Option<std::time::Instant>>>,
 }
+
+/// Shortest gap between incremental transcripts.json writes.
+///
+/// The file is rewritten whole every time, so writing it per transcript row is
+/// quadratic in the length of the meeting — and it happens inline on the thread
+/// decoding audio, because Tauri runs Rust event listeners on the emitting
+/// thread. An hour in, every few seconds of speech re-serialised the whole hour
+/// before the decoder could look at the next chunk.
+///
+/// The file only exists to survive a crash, and 5 seconds is a fine amount of
+/// transcript to lose to one. A clean stop always writes it in full.
+const TRANSCRIPT_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl RecordingSaver {
     pub fn new() -> Self {
@@ -67,6 +82,7 @@ impl RecordingSaver {
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
+            last_transcript_write: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -110,12 +126,30 @@ impl RecordingSaver {
             error!("Failed to lock transcript segments for adding segment {}", segment.id);
         }
 
-        // NEW: Save incrementally to disk
+        // Save incrementally to disk, but no more often than the interval: this
+        // runs on the audio decode thread (see TRANSCRIPT_WRITE_INTERVAL).
         if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                warn!("Failed to write incremental transcript update: {}", e);
+            if self.claim_transcript_write() {
+                if let Err(e) = self.write_transcripts_json(folder) {
+                    warn!("Failed to write incremental transcript update: {}", e);
+                }
             }
         }
+    }
+
+    /// True when enough time has passed to write transcripts.json again.
+    /// Records the attempt, so callers must actually write when it returns true.
+    fn claim_transcript_write(&self) -> bool {
+        let Ok(mut last) = self.last_transcript_write.lock() else {
+            // A poisoned lock must not cost us the transcript file.
+            return true;
+        };
+        let now = std::time::Instant::now();
+        if last.is_some_and(|t| now.duration_since(t) < TRANSCRIPT_WRITE_INTERVAL) {
+            return false;
+        }
+        *last = Some(now);
+        true
     }
 
     /// Legacy method for backward compatibility - converts text to basic segment

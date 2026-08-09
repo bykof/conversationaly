@@ -57,18 +57,13 @@ function formatRecordingTime(seconds: number | undefined): string {
     return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${pad(minutes)}:${pad(secs)}`;
 }
 
-// Helper function to remove filler words and repetitions
-function cleanStopWords(text: string): string {
-    const stopWords = ['uh', 'um', 'er', 'ah', 'hmm', 'hm', 'eh', 'oh'];
-
-    let cleanedText = text;
-    stopWords.forEach(word => {
-        const pattern = new RegExp(`\\b${word}\\b[,\\s]*`, 'gi');
-        cleanedText = cleanedText.replace(pattern, ' ');
-    });
-
-    return cleanedText.replace(/\s+/g, ' ').trim();
-}
+// A filler-word stripper used to run here, deleting uh/um/er/ah/hmm/hm/eh/oh
+// from every line before rendering. It was wrong in two ways at once: the words
+// are real words in the languages this app transcribes ("er" = he, "oh", "eh",
+// "um" are ordinary German), and it rewrote only the *displayed* text, so the
+// transcript on screen silently disagreed with the one that got saved,
+// exported and summarised. A transcript that edits what was said is not a
+// transcript. Render what the model heard.
 
 // Memoized transcript segment component
 const TranscriptSegment = memo(function TranscriptSegment({
@@ -87,7 +82,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     showConfidence: boolean;
 }) {
     const isSilence = text.trim() === '';
-    const displayText = isSilence ? 'Silence' : cleanStopWords(text) || text;
+    const displayText = isSilence ? 'Silence' : text;
 
     return (
         <div id={`segment-${id}`} className="group flex items-baseline gap-3 py-1.5">
@@ -178,6 +173,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         virtualizer,
         virtualizationThreshold: VIRTUALIZATION_THRESHOLD,
         disableAutoScroll,
+        liveText: partialText,
     });
 
     // Streaming text effect hook (typewriter animation for new transcripts)

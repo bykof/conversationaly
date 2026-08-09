@@ -55,33 +55,13 @@ impl SystemAudioCapture {
             tokio::spawn(async move {
                 use futures_util::StreamExt;
                 let mut stream = core_audio_stream;
-                let mut buffer = Vec::new();
-                let chunk_size = 1024;
 
-                loop {
-                    // Check if we should stop
-                    if drop_rx.try_recv().is_ok() {
+                // The Core Audio stream already yields batches, so forward them
+                // as they come rather than reassembling them sample by sample.
+                while let Some(batch) = stream.next().await {
+                    if drop_rx.try_recv().is_ok() || tx.unbounded_send(batch).is_err() {
                         break;
                     }
-
-                    // Poll the Core Audio stream
-                    match stream.next().await {
-                        Some(sample) => {
-                            buffer.push(sample);
-                            if buffer.len() >= chunk_size {
-                                if tx.unbounded_send(buffer.clone()).is_err() {
-                                    break;
-                                }
-                                buffer.clear();
-                            }
-                        }
-                        None => break,
-                    }
-                }
-
-                // Send any remaining samples
-                if !buffer.is_empty() {
-                    let _ = tx.unbounded_send(buffer);
                 }
             });
 

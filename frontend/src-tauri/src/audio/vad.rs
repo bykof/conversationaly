@@ -17,7 +17,6 @@ pub struct SpeechSegment {
 pub struct ContinuousVadProcessor {
     session: VadSession,
     chunk_size: usize,
-    sample_rate: u32,
     buffer: Vec<f32>,
     speech_segments: VecDeque<SpeechSegment>,
     current_speech: Vec<f32>,
@@ -38,6 +37,18 @@ pub struct ContinuousVadProcessor {
 /// whole segments, so the transcript would stay empty until they stopped talking
 /// and then arrive in one lump — most of it discarded by the backlog cap.
 const MAX_UTTERANCE_SAMPLES: usize = crate::audio::common::LIVE_MAX_SEGMENT_SAMPLES;
+
+/// Upper bound on a VAD frame, so a frame can live on the stack. The frame is
+/// 30ms at 16kHz (480 samples); this leaves room without being a real limit.
+const MAX_CHUNK_SAMPLES: usize = 1024;
+
+/// How much audio to keep in front of speech that has not been reported yet.
+///
+/// Silero cannot announce speech until it has heard `min_speech_time` (250ms)
+/// of it, and its own segments are then backdated by `pre_speech_pad` (300ms).
+/// Anything we build ourselves has to hold that much history or it starts
+/// mid-word — which is what happened to every force-cut and flushed segment.
+const PRE_ROLL_SAMPLES: usize = 9600; // 600ms @ 16kHz
 
 impl ContinuousVadProcessor {
     pub fn new(input_sample_rate: u32, redemption_time_ms: u32) -> Result<Self> {
@@ -81,7 +92,6 @@ impl ContinuousVadProcessor {
         Ok(Self {
             session,
             chunk_size: vad_chunk_size,
-            sample_rate: input_sample_rate, // Store input rate for resampling ratio in resample_to_16k()
             buffer: Vec::with_capacity(vad_chunk_size * 2),
             speech_segments: VecDeque::new(),
             current_speech: Vec::new(),
@@ -93,37 +103,37 @@ impl ContinuousVadProcessor {
         })
     }
 
-    /// Process incoming audio samples and return any complete speech segments
-    /// Handles resampling from input sample rate to 16kHz for VAD processing
+    /// Process incoming 16kHz audio and return any complete speech segments.
+    ///
+    /// Input must already be 16kHz — every caller resamples before this point,
+    /// so the resampling branch that used to live here was dead code wrapped
+    /// around the app's worst resampler.
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<SpeechSegment>> {
-        // Resample to 16kHz if needed
-        let resampled_audio = if self.sample_rate == 16000 {
-            samples.to_vec()
-        } else {
-            self.resample_to_16k(samples)?
-        };
+        self.buffer.extend_from_slice(samples);
 
-        self.buffer.extend_from_slice(&resampled_audio);
-        let mut completed_segments = Vec::new();
-
-        // Process complete 30ms chunks (480 samples at 16kHz)
-        while self.buffer.len() >= self.chunk_size {
-            let chunk: Vec<f32> = self.buffer.drain(..self.chunk_size).collect();
-            self.process_chunk(&chunk)?;
-
-            // Extract any completed speech segments
-            while let Some(segment) = self.speech_segments.pop_front() {
-                completed_segments.push(segment);
+        // Consume whole frames, then drop them in one go. Draining 480 samples
+        // off the front per frame memmoved the remaining buffer every time and
+        // allocated a Vec per 30ms of audio.
+        let consumable = self.buffer.len() - self.buffer.len() % self.chunk_size;
+        for start in (0..consumable).step_by(self.chunk_size) {
+            // Copied out because process_chunk needs &mut self. One fixed-size
+            // frame on the stack, not a heap allocation per frame.
+            let mut frame = [0.0f32; MAX_CHUNK_SAMPLES];
+            let frame = &mut frame[..self.chunk_size];
+            frame.copy_from_slice(&self.buffer[start..start + self.chunk_size]);
+            // Silero rejects a frame outright if any sample is outside [-1, 1],
+            // and we drop the whole 30ms when it does. Every producer can
+            // overshoot: sinc resampling rings past the peak it was handed (the
+            // live mixer clamps to exactly 1.0, so its output is the worst
+            // case), and imported float WAVs are not bounded at all.
+            for sample in frame.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0);
             }
+            self.process_chunk(frame)?;
         }
+        self.buffer.drain(..consumable);
 
-        Ok(completed_segments)
-    }
-
-    /// Improved resampling from input sample rate to 16kHz with anti-aliasing
-    /// Uses linear interpolation and basic low-pass filtering for better quality
-    fn resample_to_16k(&self, samples: &[f32]) -> Result<Vec<f32>> {
-        Ok(resample_to_16k(samples, self.sample_rate))
+        Ok(self.speech_segments.drain(..).collect())
     }
 
     /// Flush any remaining audio and return final speech segments
@@ -131,35 +141,26 @@ impl ContinuousVadProcessor {
         debug!("VAD flush: in_speech={}, current_speech_len={}, buffer_len={}, speech_segments_queued={}",
               self.in_speech, self.current_speech.len(), self.buffer.len(), self.speech_segments.len());
 
-        let mut completed_segments = Vec::new();
-
-        // Process any remaining buffered audio
+        // Carry the sub-frame remainder into the final segment rather than
+        // zero-padding it up to a frame and running Silero on it. Padding
+        // injected up to 30ms of manufactured silence into the emitted audio
+        // and pushed processed_samples (and so every timestamp after it) past
+        // the real end of the recording. Silero's verdict on a partial frame is
+        // worth nothing here anyway — we are force-ending regardless.
         if !self.buffer.is_empty() {
-            let remaining = self.buffer.clone();
+            self.processed_samples += self.buffer.len();
+            self.current_speech.extend_from_slice(&self.buffer);
             self.buffer.clear();
-
-            // Pad to chunk size if needed
-            let mut padded_chunk = remaining;
-            if padded_chunk.len() < self.chunk_size {
-                padded_chunk.resize(self.chunk_size, 0.0);
-            }
-
-            self.process_chunk(&padded_chunk)?;
         }
 
         // Force end any ongoing speech
         if self.in_speech {
-            self.cut_current_speech(0.8); // estimated confidence for a forced end
+            self.cut_current_speech(0.8, 0); // estimated confidence for a forced end
             self.in_speech = false;
             self.mid_utterance_cut = false;
         }
 
-        // Extract all remaining segments
-        while let Some(segment) = self.speech_segments.pop_front() {
-            completed_segments.push(segment);
-        }
-
-        Ok(completed_segments)
+        Ok(self.speech_segments.drain(..).collect())
     }
 
     fn process_chunk(&mut self, chunk: &[f32]) -> Result<()> {
@@ -173,6 +174,23 @@ impl ContinuousVadProcessor {
 
         let transitions = self.session.process(chunk)
             .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
+
+        // Silero has consumed this frame by the time process() returns, so
+        // count it now: the transitions below carry timestamps on that clock,
+        // and comparing them against a sample counter that is one frame behind
+        // is how trailing silence gets mis-measured.
+        self.processed_samples += chunk.len();
+
+        // Accumulate unconditionally, in speech or not. This buffer used to be
+        // cleared on SpeechStart, which sounds right and is not: Silero cannot
+        // raise SpeechStart until min_speech_time has already passed, and it
+        // backdates its own segments by pre_speech_pad to compensate. Clearing
+        // at that point threw away the ~570ms of audio containing the first
+        // word or two of the utterance. Silero's own segments were unaffected,
+        // so this only ever showed up on force-cut and flushed segments — long
+        // utterances and the end of every recording — as transcripts that
+        // start mid-sentence.
+        self.current_speech.extend_from_slice(chunk);
 
         // Log transitions for debugging
         if !transitions.is_empty() {
@@ -189,7 +207,6 @@ impl ContinuousVadProcessor {
                         self.last_logged_state = true;
                     }
                     self.in_speech = true;
-                    self.current_speech.clear();
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
                     // Only log if we were previously in speech state
@@ -201,16 +218,24 @@ impl ContinuousVadProcessor {
 
                     if self.mid_utterance_cut {
                         // The head of this utterance already went out as forced
-                        // cuts, and `samples` is the whole utterance — emitting it
-                        // would transcribe the same speech twice.
+                        // cuts, and `samples` is the WHOLE utterance — emitting
+                        // it would transcribe the same speech twice. So emit
+                        // only the tail we have accumulated since the last cut,
+                        // minus the redemption silence: we kept accumulating
+                        // through it, because in_speech stays true until Silero
+                        // finally calls the end, and 2s of silence handed to a
+                        // decoder is 2s of hallucination risk and a segment
+                        // whose end timestamp is 2s late.
                         self.mid_utterance_cut = false;
-                        self.cut_current_speech(0.9);
+                        let trailing = self.samples_since_ms(end_timestamp_ms as f64);
+                        self.cut_current_speech(0.9, trailing);
                     } else {
-                        // Use samples from VAD transition if available, otherwise use accumulated samples
-                        let speech_samples = if !samples.is_empty() {
-                            samples
+                        // Silero's own segment already carries pre/post padding
+                        // and excludes the redemption silence, so prefer it.
+                        let speech_samples = if samples.is_empty() {
+                            std::mem::take(&mut self.current_speech)
                         } else {
-                            self.current_speech.clone()
+                            samples
                         };
 
                         if !speech_samples.is_empty() {
@@ -233,36 +258,52 @@ impl ContinuousVadProcessor {
             }
         }
 
-        // Accumulate speech if we're currently in a speech state
         if self.in_speech {
-            self.current_speech.extend_from_slice(chunk);
-        }
-
-        self.processed_samples += chunk.len();
-
-        if self.in_speech && self.current_speech.len() >= MAX_UTTERANCE_SAMPLES {
-            self.mid_utterance_cut = true;
-            self.cut_current_speech(0.8); // forced cut, not a VAD-confirmed end
+            // Cut BEFORE the next frame would take us past the cap, not after.
+            // Overshooting by one frame put every forced cut over
+            // LIVE_MAX_SEGMENT_SAMPLES, so stream_worker's enqueue() split each
+            // one again — turning every long utterance into two decodes with a
+            // seam in the middle of a word.
+            if self.current_speech.len() + self.chunk_size > MAX_UTTERANCE_SAMPLES {
+                self.mid_utterance_cut = true;
+                self.cut_current_speech(0.8, 0); // forced cut, not a VAD-confirmed end
+            }
+        } else {
+            // Idle: keep only enough history to open the next utterance cleanly.
+            let excess = self.current_speech.len().saturating_sub(PRE_ROLL_SAMPLES);
+            if excess > 0 {
+                self.current_speech.drain(..excess);
+            }
         }
 
         Ok(())
     }
 
+    /// How many samples we have taken in since the given point on Silero's
+    /// millisecond clock. Both counters start at the session's first sample.
+    fn samples_since_ms(&self, timestamp_ms: f64) -> usize {
+        let at = (timestamp_ms / 1000.0 * 16000.0) as usize;
+        self.processed_samples.saturating_sub(at)
+    }
+
     /// Close a segment on the speech accumulated so far without ending the
-    /// utterance. Timestamps come from our own sample counter because the VAD has
-    /// not reported an end for this speech yet.
+    /// utterance. Timestamps come from our own sample counter because the VAD
+    /// has not reported an end for this speech yet.
     ///
-    /// ponytail: the head of a cut utterance comes from chunks accumulated since
-    /// SpeechStart, so it misses the VAD's `pre_speech_pad`. Buffer a ~300ms
-    /// pre-roll here if first words start coming back clipped.
-    fn cut_current_speech(&mut self, confidence: f32) {
+    /// `trailing_silence` is how many samples at the end are known not to be
+    /// speech (the redemption gap Silero waited through before calling the
+    /// end); they are dropped so the decoder is not handed silence and the
+    /// segment's end timestamp is honest.
+    fn cut_current_speech(&mut self, confidence: f32, trailing_silence: usize) {
+        let keep = self.current_speech.len().saturating_sub(trailing_silence);
+        self.current_speech.truncate(keep);
         if self.current_speech.is_empty() {
             return;
         }
-        let end_ms = (self.processed_samples as f64 / 16000.0) * 1000.0;
-        let start_ms = ((self.processed_samples.saturating_sub(self.current_speech.len())) as f64
-            / 16000.0)
-            * 1000.0;
+        let sample_to_ms = |s: usize| (s as f64 / 16000.0) * 1000.0;
+        let end_sample = self.processed_samples.saturating_sub(trailing_silence);
+        let end_ms = sample_to_ms(end_sample);
+        let start_ms = sample_to_ms(end_sample.saturating_sub(self.current_speech.len()));
 
         info!(
             "VAD: Cut speech segment at {:.1}ms ({} samples, {:.1}s)",
@@ -278,52 +319,6 @@ impl ContinuousVadProcessor {
             confidence,
         });
     }
-}
-
-/// Resample a buffer to 16kHz with basic anti-aliasing.
-///
-/// Lifted out of ContinuousVadProcessor unchanged so the live pipeline can feed
-/// the transcription stream directly instead of routing audio through VAD. It
-/// is stateless per call, which is how the VAD path always used it.
-pub fn resample_to_16k(samples: &[f32], sample_rate: u32) -> Vec<f32> {
-    if sample_rate == 16000 {
-        return samples.to_vec();
-    }
-
-    let ratio = sample_rate as f64 / 16000.0;
-    let output_len = (samples.len() as f64 / ratio) as usize;
-    let mut resampled = Vec::with_capacity(output_len);
-
-    // Simple moving-average low-pass before downsampling, to reduce aliasing.
-    // Note the window is effectively fixed at 2 regardless of sample rate; kept
-    // as-is because this is the exact filter the shipped VAD path used.
-    let cutoff_freq = 0.4;
-    let filter_size = (sample_rate as f64 / (cutoff_freq * sample_rate as f64)) as usize;
-    let filter_size = std::cmp::max(1, std::cmp::min(filter_size, 5));
-
-    let mut filtered_samples = Vec::with_capacity(samples.len());
-    for i in 0..samples.len() {
-        let start = i.saturating_sub(filter_size);
-        let end = std::cmp::min(i + filter_size + 1, samples.len());
-        let sum: f32 = samples[start..end].iter().sum();
-        filtered_samples.push(sum / (end - start) as f32);
-    }
-
-    for i in 0..output_len {
-        let source_pos = i as f64 * ratio;
-        let source_index = source_pos as usize;
-        let fraction = source_pos - source_index as f64;
-
-        if source_index + 1 < filtered_samples.len() {
-            let sample1 = filtered_samples[source_index];
-            let sample2 = filtered_samples[source_index + 1];
-            resampled.push(sample1 + (sample2 - sample1) * fraction as f32);
-        } else if source_index < filtered_samples.len() {
-            resampled.push(filtered_samples[source_index]);
-        }
-    }
-
-    resampled
 }
 
 /// Legacy function for backward compatibility - now uses the optimized approach
@@ -525,6 +520,90 @@ mod tests {
             .map(|s| s.samples.len())
             .sum();
         assert_eq!(emitted, secs * 16000, "emitted audio should equal audio fed");
+    }
+
+    /// Regression: forced cuts landed one frame PAST the cap, so
+    /// `stream_worker::enqueue` saw an over-long segment and split every one of
+    /// them again — an extra decode per long utterance, with the seam falling
+    /// wherever the split heuristic landed rather than at a pause.
+    #[test]
+    fn a_forced_cut_never_exceeds_the_cap_that_would_re_split_it() {
+        let mut vad = ContinuousVadProcessor::new(16000, 2000).expect("VAD");
+        vad.in_speech = true; // mid-utterance, no SpeechEnd coming
+
+        let mut segments = Vec::new();
+        for _ in 0..400 {
+            segments.extend(vad.process_audio(&vec![0.1f32; 1600]).expect("process"));
+        }
+
+        assert!(!segments.is_empty(), "expected forced cuts");
+        for segment in &segments {
+            assert!(
+                segment.samples.len() <= MAX_UTTERANCE_SAMPLES,
+                "a cut of {} samples is over the {MAX_UTTERANCE_SAMPLES} cap and will be split again",
+                segment.samples.len()
+            );
+        }
+    }
+
+    /// Regression: `current_speech` was cleared on SpeechStart, but Silero
+    /// cannot raise SpeechStart until min_speech_time has already elapsed. Any
+    /// segment we built ourselves therefore began ~570ms into the utterance,
+    /// and force-cut and flushed transcripts started mid-word.
+    #[test]
+    fn speech_before_the_vad_notices_it_is_still_in_the_segment() {
+        let mut vad = ContinuousVadProcessor::new(16000, 2000).expect("VAD");
+
+        // 400ms of audio that Silero has not (yet) called speech. This is the
+        // window the onset of a real utterance lives in.
+        let onset = vec![0.42f32; 6400];
+        vad.process_audio(&onset).expect("process");
+        assert!(!vad.in_speech, "precondition: the VAD has not called this speech");
+
+        // Now speech is recognised, and the utterance ends by flush.
+        vad.in_speech = true;
+        vad.process_audio(&vec![0.5f32; 16000]).expect("process");
+        let segments = vad.flush().expect("flush");
+
+        let emitted: usize = segments.iter().map(|s| s.samples.len()).sum();
+        assert!(
+            emitted > 16000,
+            "segment holds {emitted} samples: the pre-speech onset was thrown away"
+        );
+        assert!(
+            segments[0].samples.iter().any(|&s| s == 0.42),
+            "the segment must actually contain the pre-speech audio, not just be long"
+        );
+    }
+
+    /// Regression: resampling to 16kHz rings slightly past ±1.0, and Silero
+    /// rejects any frame containing such a sample — so the segmented live path
+    /// dropped every 30ms frame of loud audio and transcribed nothing.
+    #[test]
+    fn audio_that_overshoots_full_scale_is_still_processed() {
+        let mut vad = ContinuousVadProcessor::new(16000, 2000).expect("VAD");
+
+        // What the sinc downsampler hands over after the mixer clamped to 1.0.
+        let overshoot: Vec<f32> = (0..16000)
+            .map(|i| if i % 2 == 0 { 1.0003 } else { -1.0007 })
+            .collect();
+
+        vad.process_audio(&overshoot)
+            .expect("out-of-range samples must not fail the frame");
+    }
+
+    /// The pre-roll must not grow without bound through a long silence.
+    #[test]
+    fn silence_does_not_accumulate_beyond_the_pre_roll() {
+        let mut vad = ContinuousVadProcessor::new(16000, 2000).expect("VAD");
+        for _ in 0..60 {
+            vad.process_audio(&vec![0.0f32; 16000]).expect("process"); // 60s
+        }
+        assert!(
+            vad.current_speech.len() <= PRE_ROLL_SAMPLES,
+            "held {} samples of silence, cap is {PRE_ROLL_SAMPLES}",
+            vad.current_speech.len()
+        );
     }
 
     #[test]
