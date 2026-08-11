@@ -42,6 +42,8 @@ pub struct TranscriptSearchResult {
     #[serde(rename = "matchContext")]
     pub match_context: String,
     pub timestamp: String,
+    /// "transcript" | "summary" — which kind of content the snippet came from.
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

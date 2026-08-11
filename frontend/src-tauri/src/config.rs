@@ -51,8 +51,15 @@ pub const RECOMMENDED_LIVE_MODELS: &[&str] = &[
 ];
 
 /// Batch-only models worth surfacing for import and retranscription.
-pub const RECOMMENDED_IMPORT_MODELS: &[&str] =
-    &["whisper-large-v3-turbo-q8", "parakeet-tdt-0.6b-v3-q8"];
+///
+/// Both sit at the top of the Open ASR Leaderboard (granite-speech-4.1-2b 5.33%
+/// avg WER, cohere-transcribe-03-2026 5.42%), which is what a file is worth
+/// waiting for. whisper-large-v3-turbo and parakeet-tdt-0.6b-v3 are still in
+/// the catalog, just no longer the first thing offered.
+pub const RECOMMENDED_IMPORT_MODELS: &[&str] = &[
+    "granite-speech-4.1-2b-plus-q8",
+    "cohere-transcribe-03-2026-q8",
+];
 
 /// One catalog row: a single quantization of a single transcribe.cpp variant.
 #[derive(Debug, Clone, Copy)]

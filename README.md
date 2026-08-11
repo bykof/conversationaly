@@ -1,178 +1,132 @@
 <div align="center" style="border-bottom: none">
-    <h1>
-        Privacy-First AI Meeting Assistant
-    </h1>
-    <a href="https://github.com/bykof/conversationaly/releases/"><img src="https://img.shields.io/badge/Pre_Release-Link-brightgreen" alt="Pre-Release"></a>
-    <a href="https://github.com/bykof/conversationaly/releases"><img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/bykof/conversationaly?style=flat"></a>
-    <a href="https://github.com/bykof/conversationaly/releases"><img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/bykof/conversationaly/total?style=plastic"></a>
-    <a href="https://github.com/bykof/conversationaly/releases"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License"></a>
-    <a href="https://github.com/bykof/conversationaly/releases"><img src="https://img.shields.io/badge/Supported_OS-macOS,_Windows-white" alt="Supported OS"></a>
-    <a href="https://github.com/bykof/conversationaly/releases"><img alt="GitHub Tag" src="https://img.shields.io/github/v/tag/bykof/conversationaly?include_prereleases&color=yellow"></a>
-    <br>
-    <h3>
-    <br>
-    Open Source • Privacy-First • Enterprise-Ready
-    </h3>
+    <h1>Conversationaly</h1>
+    <a href="https://github.com/bykof/conversationaly/stargazers"><img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/bykof/conversationaly?style=flat"></a>
+    <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License"></a>
+    <img src="https://img.shields.io/badge/Supported_OS-macOS,_Windows,_Linux-white" alt="Supported OS">
+    <h3>Privacy-First AI Meeting Assistant</h3>
     <p align="center">
 
-A privacy-first AI meeting assistant that captures, transcribes, and summarizes meetings entirely on your infrastructure. Built by expert AI engineers passionate about data sovereignty and open source solutions. Perfect for enterprises that need advanced meeting intelligence without compromising on privacy, compliance, or control.
+Records your meetings, transcribes them live, and writes the summary — on your machine, with no account and no cloud round-trip unless you deliberately configure one.
 
 </p>
-
-<p align="center">
-    <a href="https://youtu.be/6FnhSC_eSz8">View full Demo Video</a>
-</p>
-
 </div>
 
 <details>
 <summary>Table of Contents</summary>
 
 - [Introduction](#introduction)
-- [Why Conversationaly?](#why-conversationaly)
 - [Features](#features)
 - [Installation](#installation)
-- [Key Features in Action](#key-features-in-action)
+- [How It Works](#how-it-works)
 - [System Architecture](#system-architecture)
 - [For Developers](#for-developers)
 - [Contributing](#contributing)
 - [License](#license)
+- [Acknowledgments](#acknowledgments)
 
 </details>
 
 ## Introduction
 
-Conversationaly is a privacy-first AI meeting assistant that runs entirely on your local machine. It captures your meetings, transcribes them in real-time, and generates summaries, all without sending any data to the cloud. This makes it the perfect solution for professionals and enterprises who need to maintain complete control over their sensitive information.
+Conversationaly is a desktop app (macOS, Windows, Linux) that captures your microphone and system audio, transcribes the meeting as it happens, and generates a summary. Transcription models and the summary LLM both run locally by default — nothing is sent anywhere. Cloud providers are available if you want them, but they are opt-in, per-feature.
 
-## Why Conversationaly?
-
-While there are many meeting transcription tools available, this solution stands out by offering:
-
-- **Privacy First:** All processing happens locally on your device.
-- **Cost-Effective:** Uses open-source AI models instead of expensive APIs.
-- **Flexible:** Works offline and supports multiple meeting platforms.
-- **Customizable:** Self-host and modify for your specific needs.
-
-<details>
-<summary>The Privacy Problem</summary>
-
-Meeting AI tools create significant privacy and compliance risks across all sectors:
-
-- **$4.4M average cost per data breach** (IBM 2024)
-- **€5.88 billion in GDPR fines** issued by 2025
-- **400+ unlawful recording cases** filed in California this year
-
-Whether you're a defense consultant, enterprise executive, legal professional, or healthcare provider, your sensitive discussions shouldn't live on servers you don't control. Cloud meeting tools promise convenience but deliver privacy nightmares with unclear data storage practices and potential unauthorized access.
-
-**Conversationaly solves this:** Complete data sovereignty on your infrastructure, zero vendor lock-in, and full control over your sensitive conversations.
-
-</details>
+It is a fork of [Meetily](https://github.com/Zackriya-Solutions/meeting-minutes), rebuilt around [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) and a bundled llama.cpp sidecar. It is fully free — there is no paid tier, no license key, no telemetry.
 
 ## Features
 
-- **Local First:** All processing is done on your machine. No data ever leaves your computer.
-- **Real-time Transcription:** Get a live transcript of your meeting as it happens.
-- **AI-Powered Summaries:** Generate summaries of your meetings using powerful language models.
-- **Multi-Platform:** Works on macOS, Windows, and Linux.
-- **Open Source:** Conversationaly is open source and free to use.
-- **Flexible AI Provider Support:** Choose from Ollama (local), Claude, Groq, OpenRouter, or use your own OpenAI-compatible endpoint.
+- **Local transcription** — ~87 models across 16 families (Whisper, Parakeet, Nemotron, Canary, Voxtral, Qwen3-ASR, SenseVoice, Moonshine, GigaAM, …), downloaded on demand. Default: `nemotron-3.5-asr-streaming-0.6b-q8`, multilingual across 39 locales.
+- **Live transcript** — streaming-native models transcribe continuously as you speak; batch-only models are segmented by voice activity and still work live.
+- **Built-in AI, no Ollama required** — a bundled `llama-helper` sidecar runs Gemma 4 locally for summaries, and can also transcribe directly as an audio LLM.
+- **Bring your own LLM** — summaries via Built-in AI, Ollama, Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint.
+- **Optional cloud STT** — Deepgram, ElevenLabs, Groq, or OpenAI, if you prefer a hosted transcriber.
+- **Professional audio mixing** — microphone and system audio captured together with RMS-based ducking and clipping prevention.
+- **Import & enhance** `Beta` — transcribe existing audio files, or re-transcribe a past meeting with a different model or language.
+- **Summary templates** — pick or write the structure your summaries follow, and set the summary language independently of the spoken one.
+- **GPU acceleration** — Metal on Apple Silicon, CUDA (NVIDIA), Vulkan (AMD/Intel), ROCm (AMD on Linux).
+- **Local storage** — meetings, transcripts, and models live in a SQLite database and a model directory on your disk.
 
 ## Installation
 
-### 🪟 **Windows**
+Prebuilt installers (macOS `.dmg`, Windows `.exe`, Linux `.deb`/`.rpm`/`.AppImage`) are published on the [Releases page](https://github.com/bykof/conversationaly/releases) when a version is tagged.
 
-1. Download the latest `x64-setup.exe` from [Releases](https://github.com/bykof/conversationaly/releases/latest)
-2. Run the installer
+### Build from source
 
-### 🍎 **macOS**
-
-1. Download `conversationaly_0.4.0_aarch64.dmg` from [Releases](https://github.com/bykof/conversationaly/releases/latest)
-2. Open the downloaded `.dmg` file
-3. Drag **Conversationaly** to your Applications folder
-4. Open **Conversationaly** from Applications folder
-
-### 🐧 **Linux**
-
-Build from source following our detailed guides:
-
-- [Building on Linux](docs/building_in_linux.md)
-- [General Build Instructions](docs/BUILDING.md)
-
-**Quick start:**
+Requires Rust, Node.js, pnpm, and cmake. See [docs/BUILDING.md](docs/BUILDING.md) for per-platform prerequisites.
 
 ```bash
 git clone https://github.com/bykof/conversationaly
 cd conversationaly/frontend
 pnpm install
+
+# macOS
+./clean_build.sh
+
+# Linux (auto-detects GPU backend)
 ./build-gpu.sh
+
+# Windows
+clean_build_windows.bat
 ```
 
-## Key Features in Action
+Linux specifics: [docs/building_in_linux.md](docs/building_in_linux.md).
 
-### 🎯 Local Transcription
+### Permissions
 
-Transcribe meetings entirely on your device using **Whisper** or **Parakeet** models. No cloud required.
+- **macOS** — microphone, plus screen recording for system audio (ScreenCaptureKit, macOS 13+).
+- **Windows** — microphone; system audio uses WASAPI loopback.
 
-### 📥 Import & Enhance `Beta`
+## How It Works
 
-Import existing audio files to generate transcripts, or enhance to re-transcribe any recorded meeting with a different model or language, all processed locally.
+On first launch, onboarding downloads one transcription model and one Gemma 4 tier. From then on:
 
-> Contributed by [Jeremi Joslin](https://github.com/jeremi), improved by [Vishnu P S](https://github.com/p-s-vishnu) and [Mohammed Safvan](https://github.com/mohammedsafvan)
+1. Microphone and system audio are captured, mixed, and written to a recording.
+2. The same mixed audio is resampled to 16 kHz and fed to the transcription engine, which emits transcript lines as the meeting runs.
+3. When you ask for a summary, the transcript goes to whichever LLM provider you configured — the local sidecar by default.
 
-### 🤖 AI-Powered Summaries
-
-Generate meeting summaries with your choice of AI provider. **Ollama** (local) is recommended, with support for Claude, Groq, OpenRouter, and OpenAI.
-
-### 🔒 Privacy-First Design
-
-All data stays on your machine. Transcription models, recordings, and transcripts are stored locally.
-
-### 🌐 Custom OpenAI Endpoint Support
-
-Use your own OpenAI-compatible endpoint for AI summaries. Perfect for organizations with custom AI infrastructure or preferred providers.
-
-### 🎙️ Professional Audio Mixing
-
-Capture microphone and system audio simultaneously with intelligent ducking and clipping prevention.
-
-### ⚡ GPU Acceleration
-
-Built-in support for hardware acceleration across platforms:
-
-- **macOS**: Apple Silicon (Metal) + CoreML
-- **Windows/Linux**: NVIDIA (CUDA), AMD/Intel (Vulkan)
-
-Automatically enabled at build time - no configuration needed.
+Everything above is a local process. Cloud STT and cloud summary providers are the only paths that leave your machine, and only when you select one and supply a key.
 
 ## System Architecture
 
-Conversationaly is a single, self-contained application built with [Tauri](https://tauri.app/). It uses a Rust-based backend to handle all the core logic, and a Next.js frontend for the user interface.
+A single Tauri application: a Rust core (audio capture, transcription, storage, summary orchestration) and a Next.js frontend, communicating over Tauri commands and events. There is no separate server to run.
 
-For more details, see the [Architecture documentation](docs/architecture.md).
+Details: [docs/architecture.md](docs/architecture.md).
 
 ## For Developers
 
-If you want to contribute to Conversationaly or build it from source, you'll need to have Rust and Node.js installed. For detailed build instructions, please see the [Building from Source guide](docs/BUILDING.md).
+```bash
+cd frontend
+pnpm install
+
+./clean_run.sh              # macOS: build and run (info logging)
+./clean_run.sh debug        # verbose logging
+clean_run_windows.bat       # Windows
+./dev-gpu.sh                # Linux
+
+pnpm run tauri:dev          # plain dev mode
+pnpm run tauri:dev:metal    # force a specific GPU backend
+pnpm run tauri:dev:cuda
+pnpm run tauri:dev:vulkan
+pnpm run tauri:dev:cpu
+```
+
+Architecture notes and conventions for contributors live in [CLAUDE.md](CLAUDE.md); GPU backend details in [docs/GPU_ACCELERATION.md](docs/GPU_ACCELERATION.md).
+
+> The `backend/` directory is an archived Python/FastAPI service from before the Tauri rewrite. It is unsupported and not needed to build or run the app.
 
 ## Contributing
 
-We welcome contributions from the community! If you have any questions or suggestions, please open an issue or submit a pull request. Please follow the established project structure and guidelines. For more details, refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file.
-
-Thanks for all the contributions. Our community is what makes this project possible.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure and guidelines.
 
 ## License
 
-MIT License - Feel free to use this project for your own purposes.
+MIT — see [LICENSE.md](LICENSE.md).
 
 ## Acknowledgments
 
 - Conversationaly is a fork of [Meetily](https://github.com/Zackriya-Solutions/meeting-minutes) by Zackriya Solutions, which it builds on under the MIT license.
-- We borrowed some code from [Whisper.cpp](https://github.com/ggerganov/whisper.cpp).
-- We borrowed some code from [Screenpipe](https://github.com/mediar-ai/screenpipe).
-- We borrowed some code from [transcribe-rs](https://crates.io/crates/transcribe-rs).
-- Thanks to **NVIDIA** for developing the **Parakeet** model.
-- Thanks to [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) for providing the **ONNX conversion** of the Parakeet model.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=bykof/conversationaly&type=date&legend=top-left)](https://www.star-history.com/?repos=bykof%2Fconversationaly&type=date&legend=bottom-right)
+- Transcription runs on [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp), built on [ggml](https://github.com/ggerganov/ggml) / [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
+- Local LLM inference uses [llama.cpp](https://github.com/ggerganov/llama.cpp) via [llama-cpp-2](https://crates.io/crates/llama-cpp-2).
+- We borrowed some code from [Screenpipe](https://github.com/mediar-ai/screenpipe) and [transcribe-rs](https://crates.io/crates/transcribe-rs).
+- Import & Enhance was contributed by [Jeremi Joslin](https://github.com/jeremi), improved by [Vishnu P S](https://github.com/p-s-vishnu) and [Mohammed Safvan](https://github.com/mohammedsafvan).
+- Thanks to **NVIDIA** for the **Parakeet** and **Nemotron** speech models, and to the teams behind the other model families in the catalog.
+</content>

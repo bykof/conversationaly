@@ -115,8 +115,17 @@ users view at a consistent DPI and a fluid heading in a 256px sidebar looks wors
 | `text-2xl` | 25 / 31 | Page titles |
 | `text-3xl` | 31 / 37 | Meeting title |
 
-Prose measure capped at 68ch (`--measure`). Transcript and summary both respect
-it. `text-wrap: balance` on titles, `pretty` on prose.
+Prose measure capped at 68ch (`--measure`) on the **live** transcript, where the
+column is the whole surface and nothing else competes for the width.
+
+The **generated summary does not use it** — it runs the full width of its pane.
+A summary is not only prose: it carries action-item tables and reference
+columns, and a 68ch cap clipped them while leaving the rest of a wide pane
+empty. Its measure is the pane, and the pane is the user's to drag. The only
+horizontal inset is BlockNote's left gutter (54px, where the block handles
+live) plus 24px on the right.
+
+`text-wrap: balance` on titles, `pretty` on prose.
 
 ## Shape & elevation
 
@@ -130,9 +139,24 @@ genuinely floats (popover, dialog, the recording transport). Two shadow tokens,
 
 ## Layout
 
-- Sidebar rail: 256px expanded / 56px collapsed, `--panel`, hairline right
+- Sidebar rail: 304px expanded / 56px collapsed, `--panel`, hairline right
   border. Expanded on launch — the meeting list is the app's content, not an
-  optional drawer.
+  optional drawer. Rail rows, meeting titles and the search field are set one
+  step down the scale (`text-xs`) from the app's default: the rail is dense
+  navigation, and 12px buys a meeting title several more words before it
+  truncates.
+- **Panes are user-resizable, pane widths persist, collapse does not.** Two
+  dividers — rail│content and transcript│summary — each a 5px hit target
+  straddling the hairline the pane already draws: nothing at rest, a `--brand`
+  rule while grabbed, double-click to reset. Widths are stored under
+  `conversationaly.panes` and restored before first paint by an inline script,
+  the same treatment the theme gets; a *collapse* stays a per-session gesture.
+  Defaults live in `globals.css` (`--rail-w`, `--pane-transcript`) and the drag
+  bounds in `lib/panes.ts`. A drag writes the custom property directly, never
+  React state — the virtualized transcript may not re-render per pointer frame.
+  CSS carries the safety net for a shrinking window (`min()` on the rail,
+  `max-width` on the transcript pane), so no window size and no stored width
+  can starve the pane after it.
 - **One rail axis.** `--rail-gutter` (8px, exposed to Tailwind as `px-gutter`)
   insets every zone, and every row pads by it again, so each row's content box
   starts at 2×gutter: the brand mark, the Home icon, the search icon, the

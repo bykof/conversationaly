@@ -169,13 +169,6 @@ export function ImportAudioDialog({
     const name = selectedModelKey.slice(colonIndex + 1);
     return availableModels.find((m) => m.provider === provider && m.name === name);
   }, [selectedModelKey, availableModels]);
-  const isParakeetModel = selectedModel?.provider === 'local';
-
-  useEffect(() => {
-    if (isParakeetModel && selectedLang !== 'auto') {
-      setSelectedLang('auto');
-    }
-  }, [isParakeetModel, selectedLang]);
 
   const handleSelectFile = async () => {
     const info = await selectFile();
@@ -190,7 +183,7 @@ export function ImportAudioDialog({
     await startImport(
       fileInfo.path,
       title || fileInfo.filename,
-      isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang,
+      selectedLang === 'auto' ? null : selectedLang,
       selectedModel?.name || null,
       selectedModel?.provider || null
     );
@@ -343,36 +336,29 @@ export function ImportAudioDialog({
                   {showAdvanced && (
                     <div className="p-3 pt-0 space-y-4 border-t">
                       {/* Language selector */}
-                      {!isParakeetModel ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">Language</span>
-                          </div>
-                          <Select value={selectedLang} onValueChange={setSelectedLang}>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select language" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-60">
-                              {LANGUAGES.map((lang) => (
-                                <SelectItem key={lang.code} value={lang.code}>
-                                  {lang.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Globe className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm font-medium">Language</span>
                         </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">Language</span>
-                          </div>
+                        <Select value={selectedLang} onValueChange={setSelectedLang}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select language" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-60">
+                            {LANGUAGES.map((lang) => (
+                              <SelectItem key={lang.code} value={lang.code}>
+                                {lang.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {selectedModel?.languages && (
                           <p className="text-xs text-muted-foreground">
-                            Language selection isn't supported for Parakeet. It always uses automatic detection.
+                            Model coverage: {selectedModel.languages}. Anything outside it falls back to auto-detect.
                           </p>
-                        </div>
-                      )}
+                        )}
+                      </div>
 
                       {/* Model selector */}
                       {availableModels.length > 0 && (

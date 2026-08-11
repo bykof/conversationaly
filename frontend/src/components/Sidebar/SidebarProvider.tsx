@@ -24,6 +24,7 @@ interface TranscriptSearchResult {
   title: string;
   matchContext: string;
   timestamp: string;
+  kind: 'transcript' | 'summary';
 };
 
 interface SidebarContextType {

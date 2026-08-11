@@ -300,7 +300,9 @@ impl TranscribeEngine {
         let mut session = self.open_session().await?;
         let options = RunOptions { language, ..Default::default() };
 
-        let transcript = tokio::task::spawn_blocking(move || session.run(&audio, &options))
+        let transcript = tokio::task::spawn_blocking(move || {
+            keep_partial_on_truncation(session.run(&audio, &options))
+        })
             .await
             .map_err(|e| anyhow!("Transcription task panicked: {}", e))?
             .map_err(|e| anyhow!("Transcription failed: {}", e))?;
@@ -586,6 +588,28 @@ pub fn mean_token_confidence(transcript: &Transcript) -> f32 {
     transcript.tokens.iter().map(|t| t.p).sum::<f32>() / transcript.tokens.len() as f32
 }
 
+/// Unwrap a `Session::run` outcome, keeping the text of a truncated decode.
+///
+/// A decode that reaches the model's generation budget before end-of-stream is
+/// a partial result, not a failure: transcribe.cpp stops there and hands back
+/// what it decoded on `Error::OutputTruncated`. Treating that as fatal threw
+/// away usable text and aborted a whole import/retranscription on the first
+/// dense segment that hit the cap.
+pub fn keep_partial_on_truncation(
+    outcome: std::result::Result<Transcript, transcribe_cpp::Error>,
+) -> std::result::Result<Transcript, transcribe_cpp::Error> {
+    match outcome {
+        Err(transcribe_cpp::Error::OutputTruncated {
+            message,
+            partial: Some(partial),
+        }) => {
+            warn!("Decode hit the generation cap before end-of-stream ({message}); keeping the partial transcript for this segment");
+            Ok(*partial)
+        }
+        other => other,
+    }
+}
+
 /// The model the app falls back to when nothing is configured.
 pub fn default_model_name() -> &'static str {
     DEFAULT_TRANSCRIBE_MODEL
@@ -595,6 +619,27 @@ pub fn default_model_name() -> &'static str {
 mod tests {
     use super::*;
     use crate::config::{RECOMMENDED_IMPORT_MODELS, RECOMMENDED_LIVE_MODELS};
+
+    /// A segment whose decode hit the generation cap must still yield its text:
+    /// dropping it aborted the entire retranscription of a meeting on one
+    /// segment. Anything that is a real failure still has to fail.
+    #[test]
+    fn truncated_decode_keeps_its_partial_transcript() {
+        let kept = keep_partial_on_truncation(Err(transcribe_cpp::Error::OutputTruncated {
+            message: "run: output truncated".to_string(),
+            partial: Some(Box::new(Transcript {
+                text: "half a sentence".to_string(),
+                ..Default::default()
+            })),
+        }))
+        .expect("a truncated decode still yields the text it produced");
+        assert_eq!(kept.text, "half a sentence");
+
+        assert!(keep_partial_on_truncation(Err(transcribe_cpp::Error::Busy(
+            "a stream is active".to_string()
+        )))
+        .is_err());
+    }
 
     #[test]
     fn catalog_rows_are_downloadable_and_defaults_resolve() {

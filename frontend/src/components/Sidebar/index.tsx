@@ -30,6 +30,7 @@ import { Dialog, DialogContent, DialogFooter, DialogTitle } from '@/components/u
 
 import Logo from '../Logo';
 import Info from '../Info';
+import { PaneDivider } from '../PaneDivider';
 import { ThemeToggleButton } from '../ThemeToggle';
 import { LiveIndicator } from '../LiveIndicator';
 import { Button } from '../ui/button';
@@ -41,7 +42,7 @@ interface SidebarItem {
   children?: SidebarItem[];
 }
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '1.0.0';
 
 /**
  * Every control in the rail, at both widths. One primitive rather than an
@@ -85,7 +86,7 @@ function RailRow({
         'flex h-8 items-center rounded-md transition-colors duration-fast',
         iconOnly
           ? 'w-8 shrink-0 justify-center'
-          : 'w-full gap-2 px-gutter text-sm font-medium',
+          : 'w-full gap-2 px-gutter text-xs font-medium',
         tone === 'danger'
           ? 'bg-danger text-white hover:bg-danger-hover'
           : tone === 'live'
@@ -268,8 +269,12 @@ const Sidebar: React.FC = () => {
       <aside
         aria-label="Sidebar"
         className="fixed left-0 top-0 z-rail flex h-screen flex-col border-r border-line bg-panel"
-        style={{ width: isCollapsed ? 'var(--rail-w-collapsed)' : 'var(--rail-w)' }}
+        style={{ width: 'var(--rail)' }}
       >
+        {/* Drag the rail wider. Not offered while collapsed — that width is the
+            collapse itself, and dragging it would contradict the toggle. */}
+        {!isCollapsed && <PaneDivider pane="rail" label="Resize sidebar" />}
+
         {/* 1 · Identity. The mark's junction dot is the live indicator. */}
         <div
           className={cn(
@@ -426,7 +431,7 @@ const Sidebar: React.FC = () => {
                 placeholder="Search transcripts"
                 aria-label="Search meeting transcripts"
                 className={cn(
-                  'h-8 w-full rounded-md border border-line bg-sunken pl-8 pr-7 text-sm text-ink',
+                  'h-8 w-full rounded-md border border-line bg-sunken pl-8 pr-7 text-xs text-ink',
                   'placeholder:text-ink-muted',
                   'transition-colors duration-fast',
                   'hover:border-line-strong focus:border-brand focus:bg-elevated',
@@ -522,7 +527,7 @@ const Sidebar: React.FC = () => {
                           <button
                             onClick={() => openMeeting(item)}
                             aria-current={active ? 'page' : undefined}
-                            className="min-w-0 flex-1 py-1.5 text-left text-sm"
+                            className="min-w-0 flex-1 py-1.5 text-left text-xs"
                           >
                             <span
                               className={cn(
@@ -535,6 +540,11 @@ const Sidebar: React.FC = () => {
                             </span>
                             {snippet && (
                               <span className="mt-0.5 line-clamp-2 block text-2xs leading-snug text-ink-faint">
+                                {snippet.kind === 'summary' && (
+                                  <span className="mr-1 uppercase tracking-wide text-ink-muted">
+                                    Summary
+                                  </span>
+                                )}
                                 {snippet.matchContext}
                               </span>
                             )}

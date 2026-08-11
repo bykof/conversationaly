@@ -66,6 +66,26 @@ impl SamplingParams {
         }
     }
 
+    /// LFM2.5 preset — Liquid's recommended sampling for the instruct models.
+    ///
+    /// They publish temperature, top-k and repetition penalty and say nothing
+    /// about top-p, so it stays open at 1.0. `penalty_last_n` has no upstream
+    /// number either: HF applies `repetition_penalty` over the whole sequence,
+    /// which llama.cpp spells as a window, so this borrows the 256 the Qwen
+    /// preset uses rather than inventing a different one.
+    pub fn lfm25_summary(stop_tokens: Vec<String>) -> Self {
+        Self {
+            temperature: 0.1,
+            top_k: 50,
+            top_p: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repeat_penalty: 1.1,
+            penalty_last_n: 256,
+            stop_tokens,
+        }
+    }
+
     /// Normalize built-in presets to the subset supported by llama-helper.
     pub fn sanitize_for_llama_helper(&self) -> Self {
         let temperature = if self.temperature.is_finite() {
@@ -201,7 +221,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
             // audio segment. Raise it if summary chunking becomes the bottleneck.
             context_size: 8192,
             layer_count: 30,
-            sampling: SamplingParams::gemma_instruct(vec!["<end_of_turn>".to_string()]),
+            sampling: SamplingParams::gemma_instruct(vec!["<turn|>".to_string()]),
             description: "Transcribes audio and writes summaries on modest hardware. Needs ~3.6GB of downloads.".to_string(),
             mmproj: Some(Projector {
                 file: "mmproj-gemma-4-E2B-it-BF16.gguf".to_string(),
@@ -220,13 +240,34 @@ pub fn get_available_models() -> Vec<ModelDef> {
             size_mb: 4378,
             context_size: 8192,
             layer_count: 35,
-            sampling: SamplingParams::gemma_instruct(vec!["<end_of_turn>".to_string()]),
+            sampling: SamplingParams::gemma_instruct(vec!["<turn|>".to_string()]),
             description: "Transcribes audio and writes summaries. Best accuracy of the audio-capable models. Needs ~5.2GB of downloads.".to_string(),
             mmproj: Some(Projector {
                 file: "mmproj-gemma-4-E4B-it-BF16.gguf".to_string(),
                 url: "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/mmproj-gemma-4-E4B-it-BF16.gguf".to_string(),
                 size_mb: 946,
             }),
+        },
+        // LFM2.5 2.6B — the smallest text-only tier, and the one to reach for on a
+        // machine that cannot hold anything else. Liquid trained it for agentic
+        // instruction following, which is the axis a templated meeting summary
+        // actually rides: it beats both Gemma 4 E4B and Qwen 3.5 9B on IFStruct
+        // (85.5) and Multi-IF (80.1) at a fraction of their size.
+        //
+        // Same ChatML template as the Qwen tiers, so it costs a sampling preset
+        // and nothing else.
+        ModelDef {
+            name: "lfm2.5:2.6b".to_string(),
+            display_name: "LFM2.5 2.6B (Text only)".to_string(),
+            gguf_file: "LFM2.5-2.6B-Q4_K_M.gguf".to_string(),
+            template: "lfm2_nonthinking".to_string(),
+            download_url: "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-Q4_K_M.gguf".to_string(),
+            size_mb: 1597,
+            context_size: 32768,
+            layer_count: 30,
+            sampling: SamplingParams::lfm25_summary(vec!["<|im_end|>".to_string()]),
+            description: "Writes summaries only — does not transcribe. Smallest and fastest built-in model at ~1.6GB, and the best at following a summary template.".to_string(),
+            mmproj: None,
         },
         // Qwen 3.5 — text-only summary tiers. These cannot transcribe (no
         // projector), so picking one means the sidecar holds a different model
@@ -274,6 +315,36 @@ pub fn get_available_models() -> Vec<ModelDef> {
             layer_count: 32,
             sampling: SamplingParams::qwen35_summary(vec!["<|im_end|>".to_string()]),
             description: "Writes summaries only — does not transcribe. Largest built-in model: ~5.4GB and wants ~16GB of RAM.".to_string(),
+            mmproj: None,
+        },
+        // Gemma 4 26B A4B — the quality ceiling of the built-in list. MoE: 26B of
+        // weights, 128 experts, top-8 routing, so only ~3.8B are active per token
+        // and it generates at roughly the 4B tiers' speed. That is what buys a
+        // jump the dense 12B does not: it scores 26 on Artificial Analysis'
+        // intelligence index against 21-22 for both Qwen 3.5 9B and Gemma 4 12B.
+        //
+        // Google's own QAT q4_0 build, not a post-hoc quant — the model was
+        // fine-tuned for 4-bit, so this file is close to its BF16 quality rather
+        // than a step below it. Hence the odd upstream filename.
+        //
+        // Text only on purpose. The repo does ship a projector, but it is
+        // vision-only (`audio_config: null` in the HF config), and `mmproj: Some`
+        // is what makes a model offerable for transcription here. Wiring it up
+        // would offer a model that cannot transcribe as a transcriber.
+        ModelDef {
+            name: "gemma4:26b-a4b".to_string(),
+            display_name: "Gemma 4 26B A4B (Text only)".to_string(),
+            gguf_file: "gemma-4-26B_q4_0-it.gguf".to_string(),
+            // Hybrid reasoner, unlike the E-tiers: its canonical template closes an
+            // empty thought channel on the generation prompt. Without that it thinks
+            // into the summary.
+            template: "gemma4_nothink".to_string(),
+            download_url: "https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/main/gemma-4-26B_q4_0-it.gguf".to_string(),
+            size_mb: 13770,
+            context_size: 8192,
+            layer_count: 30,
+            sampling: SamplingParams::gemma_instruct(vec!["<turn|>".to_string()]),
+            description: "Writes summaries only — does not transcribe. Best summaries of the built-in models: ~13.8GB download, wants 24GB of RAM.".to_string(),
             mmproj: None,
         },
         // Gemma 3 was dropped here: Gemma 4 supersedes it at the same download
@@ -339,19 +410,46 @@ pub fn format_transcribe_prompt(template_name: &str) -> Result<String> {
 // Prompt Templates (Model-Specific Formatting)
 // ============================================================================
 
-/// Gemma chat template format. Gemma 4 kept Gemma 3's turn markers.
+/// Gemma 4 chat template. Gemma 4 did *not* keep Gemma 3's turn markers:
+/// `<start_of_turn>`/`<end_of_turn>` are not in its vocabulary at all, so writing
+/// them here tokenizes as plain text and the model never sees a turn boundary.
+/// The canonical markers are `<|turn>role`…`<turn|>`, and unlike Gemma 3 there is
+/// a real `system` role.
+///
+/// No `<bos>`: llama-helper tokenizes with `AddBos::Always`.
 pub const GEMMA_TEMPLATE: &str = "\
-<start_of_turn>user
-{system_prompt}<end_of_turn>
-<start_of_turn>user
-{user_prompt}<end_of_turn>
-<start_of_turn>model
+<|turn>system
+{system_prompt}<turn|>
+<|turn>user
+{user_prompt}<turn|>
+<|turn>model
 ";
 
-/// Qwen 3.5 non-thinking chat template format.
-/// This starts the assistant turn with an empty think block so generation begins
-/// in direct-response mode for summaries.
-pub const QWEN35_NONTHINKING_TEMPLATE: &str = "\
+/// Gemma 4 with the thinking channel opened and closed empty, exactly as the
+/// canonical template's `enable_thinking=false` branch does it.
+///
+/// Only the hybrid-reasoning tiers need this. Left off, they open a thought
+/// channel of their own and `<|channel>thought …` lands in the summary.
+pub const GEMMA4_NOTHINK_TEMPLATE: &str = "\
+<|turn>system
+{system_prompt}<turn|>
+<|turn>user
+{user_prompt}<turn|>
+<|turn>model
+<|channel>thought
+<channel|>";
+
+/// ChatML with the assistant turn opened and thinking closed out immediately, so
+/// generation begins in direct-response mode for summaries.
+///
+/// Shared by Qwen 3.5 and LFM2.5 — their published templates are identical down to
+/// the newlines, both open `<think>` on the generation prompt, and both stop on
+/// `<|im_end|>`. They keep separate `template` names anyway because each family has
+/// its own sampling preset, and the name is what pairs the two.
+///
+/// No `<|startoftext|>`/BOS: llama-helper tokenizes text prompts with
+/// `AddBos::Always`, so a literal one here would be a second BOS.
+pub const CHATML_NONTHINKING_TEMPLATE: &str = "\
 <|im_start|>system
 {system_prompt}<|im_end|>
 <|im_start|>user
@@ -367,8 +465,12 @@ fn escape_user_prompt_control_markers(user_prompt: &str) -> String {
     user_prompt
         .replace("<|im_start|>", "< |im_start| >")
         .replace("<|im_end|>", "< |im_end| >")
-        .replace("<start_of_turn>", "< start_of_turn >")
-        .replace("<end_of_turn>", "< end_of_turn >")
+        .replace("<|startoftext|>", "< |startoftext| >")
+        .replace("<|turn>", "< |turn> ")
+        .replace("<turn|>", "< turn|> ")
+        .replace("<|channel>", "< |channel> ")
+        .replace("<channel|>", "< channel|> ")
+        .replace("<|think|>", "< |think|> ")
         .replace("<think>", "< think >")
         .replace("</think>", "< /think >")
 }
@@ -389,7 +491,8 @@ pub fn format_prompt(
 ) -> Result<String> {
     let template = match template_name {
         "gemma4" => GEMMA_TEMPLATE,
-        "qwen3.5_nonthinking" => QWEN35_NONTHINKING_TEMPLATE,
+        "gemma4_nothink" => GEMMA4_NOTHINK_TEMPLATE,
+        "qwen3.5_nonthinking" | "lfm2_nonthinking" => CHATML_NONTHINKING_TEMPLATE,
         _ => return Err(anyhow!("Unknown template: {}", template_name)),
     };
 
@@ -433,7 +536,7 @@ mod tests {
                 model.name,
                 prompt
             );
-            assert!(prompt.contains("<start_of_turn>model"), "{}", model.name);
+            assert!(prompt.contains("<|turn>model"), "{}", model.name);
         }
     }
 
@@ -487,9 +590,14 @@ mod tests {
         // invisible until summaries come out subtly worse. Pin both.
         for model in get_available_models() {
             let expected = match model.template.as_str() {
-                "gemma4" => SamplingParams::gemma_instruct(vec!["<end_of_turn>".to_string()]),
+                "gemma4" | "gemma4_nothink" => {
+                    SamplingParams::gemma_instruct(vec!["<turn|>".to_string()])
+                }
                 "qwen3.5_nonthinking" => {
                     SamplingParams::qwen35_summary(vec!["<|im_end|>".to_string()])
+                }
+                "lfm2_nonthinking" => {
+                    SamplingParams::lfm25_summary(vec!["<|im_end|>".to_string()])
                 }
                 other => panic!("{} uses unknown template {}", model.name, other),
             };
@@ -507,7 +615,7 @@ mod tests {
         }
 
         // Google's numbers for the -it models, spelled out so a preset edit trips.
-        let gemma = SamplingParams::gemma_instruct(vec!["<end_of_turn>".to_string()]);
+        let gemma = SamplingParams::gemma_instruct(vec!["<turn|>".to_string()]);
         assert_eq!(gemma.temperature, 1.0);
         assert_eq!(gemma.top_k, 64);
         assert_eq!(gemma.top_p, 0.95);
@@ -537,6 +645,43 @@ mod tests {
     }
 
     #[test]
+    fn no_template_emits_a_literal_bos() {
+        // llama-helper tokenizes text prompts with `AddBos::Always`, so a BOS
+        // written into a template is a second BOS. LFM2.5's published template
+        // starts with `<|startoftext|>` — ours must not copy it.
+        for model in get_available_models() {
+            let prompt = format_prompt(&model.template, "sys", "user").unwrap();
+            assert!(
+                !prompt.contains("<|startoftext|>"),
+                "{} emits a literal BOS",
+                model.name
+            );
+        }
+
+        // ...and a transcript containing one cannot smuggle it in either.
+        let formatted = format_prompt("lfm2_nonthinking", "sys", "literal <|startoftext|>").unwrap();
+        assert!(formatted.contains("literal < |startoftext| >"));
+    }
+
+    #[test]
+    fn lfm25_shares_the_chatml_template_and_stays_text_only() {
+        let lfm = get_model_by_name("lfm2.5:2.6b").expect("LFM2.5 is offered");
+        assert!(!lfm.is_audio(), "LFM2.5 would be offered for transcription");
+
+        // Same string as the Qwen tiers — if they ever diverge, this is the trip
+        // wire that says the shared const has to split in two.
+        let lfm_prompt = format_prompt(&lfm.template, "sys", "user").unwrap();
+        let qwen_prompt = format_prompt("qwen3.5_nonthinking", "sys", "user").unwrap();
+        assert_eq!(lfm_prompt, qwen_prompt);
+        assert!(lfm_prompt.contains("<think>\n\n</think>"));
+
+        // Liquid's published numbers, spelled out so a preset edit trips.
+        assert_eq!(lfm.sampling.temperature, 0.1);
+        assert_eq!(lfm.sampling.top_k, 50);
+        assert_eq!(lfm.sampling.repeat_penalty, 1.1);
+    }
+
+    #[test]
     fn qwen_template_escapes_user_supplied_control_markers() {
         // A transcript containing ChatML markers must not be able to close the
         // user turn or open a think block of its own.
@@ -560,14 +705,34 @@ mod tests {
         let formatted = format_prompt(
             "gemma4",
             "system rules",
-            "literal <start_of_turn> and <end_of_turn>",
+            "literal <|turn>user and <turn|> and <|channel>thought<channel|>",
         )
         .unwrap();
 
-        assert!(formatted.contains("<start_of_turn>user\nsystem rules<end_of_turn>"));
-        assert!(formatted.contains("literal < start_of_turn > and < end_of_turn >"));
-        assert_eq!(formatted.matches("<start_of_turn>").count(), 3);
-        assert_eq!(formatted.matches("<end_of_turn>").count(), 2);
+        assert!(formatted.contains("<|turn>system\nsystem rules<turn|>"));
+        assert!(formatted.contains("literal < |turn> user and < turn|> "));
+        assert!(formatted.contains("< |channel> thought< channel|> "));
+        // Three opens (system/user/model), two closes — the model turn is left
+        // open for generation.
+        assert_eq!(formatted.matches("<|turn>").count(), 3);
+        assert_eq!(formatted.matches("<turn|>").count(), 2);
+    }
+
+    #[test]
+    fn only_the_hybrid_reasoner_pre_closes_the_thought_channel() {
+        // The 26B thinks unless the generation prompt hands it a closed, empty
+        // thought channel — that is what kept `<|channel>thought` out of summaries.
+        let a4b = get_model_by_name("gemma4:26b-a4b").expect("26B A4B is offered");
+        let prompt = format_prompt(&a4b.template, "sys", "user").unwrap();
+        assert!(prompt.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+
+        // The E-tiers are not hybrid reasoners; their template has no channel at
+        // all, and adding one would be off-distribution for them.
+        for model in get_available_models().iter().filter(|m| m.is_audio()) {
+            let prompt = format_prompt(&model.template, "sys", "user").unwrap();
+            assert!(!prompt.contains("<|channel>"), "{}", model.name);
+            assert!(prompt.ends_with("<|turn>model\n"), "{}", model.name);
+        }
     }
 
     #[test]

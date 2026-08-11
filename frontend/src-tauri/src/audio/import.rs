@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use super::audio_processing::create_meeting_folder;
 use super::common::{
-    create_transcript_segments, split_segment_at_silence, write_transcripts_json,
-    MAX_SEGMENT_SAMPLES,
+    create_transcript_segments, markdown_segments, split_segment_at_silence, write_transcript_md,
+    write_transcripts_json, MAX_SEGMENT_SAMPLES,
 };
 use super::constants::AUDIO_EXTENSIONS;
 use super::recording_preferences::get_default_recordings_folder;
@@ -634,6 +634,10 @@ async fn run_import<R: Runtime>(
 
     if let Err(e) = write_transcripts_json(&meeting_folder, &segments) {
         warn!("Failed to write transcripts.json: {}", e);
+    }
+
+    if let Err(e) = write_transcript_md(&meeting_folder, Some(&title), &markdown_segments(&segments)) {
+        warn!("Failed to write transcript.md: {}", e);
     }
 
     if let Err(e) = write_import_metadata(

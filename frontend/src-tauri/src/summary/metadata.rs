@@ -1,8 +1,11 @@
 use anyhow::{bail, Context, Result};
 use once_cell::sync::Lazy;
 use serde_json::Value;
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use crate::database::repositories::meeting::MeetingsRepository;
 
 use super::processor::language_name_from_code;
 
@@ -34,6 +37,32 @@ pub(crate) fn write_detected_summary_language_to_metadata(
     summary_language: Option<&str>,
 ) -> Result<()> {
     write_language_field_to_metadata(folder, DETECTED_SUMMARY_LANGUAGE_FIELD, summary_language)
+}
+
+/// Mirror a meeting summary into `summary.md` in its meeting folder.
+///
+/// Best-effort in both directions: meetings without a folder are skipped, and
+/// failures only warn — the database stays the source of truth for summaries.
+pub(crate) async fn write_summary_md(pool: &SqlitePool, meeting_id: &str, markdown: &str) {
+    let folder = match MeetingsRepository::get_meeting_metadata(pool, meeting_id).await {
+        Ok(Some(meeting)) => meeting.folder_path.filter(|p| !p.trim().is_empty()),
+        Ok(None) => None,
+        Err(e) => {
+            log::warn!("Failed to resolve folder for summary.md ({}): {}", meeting_id, e);
+            return;
+        }
+    };
+    let Some(folder) = folder else { return };
+
+    let folder = Path::new(&folder);
+    let temp_path = folder.join(".summary.md.tmp");
+    let result = std::fs::write(&temp_path, markdown)
+        .and_then(|()| std::fs::rename(&temp_path, folder.join("summary.md")));
+
+    match result {
+        Ok(()) => log::info!("Wrote summary.md for meeting {}", meeting_id),
+        Err(e) => log::warn!("Failed to write summary.md for {}: {}", meeting_id, e),
+    }
 }
 
 fn read_language_field_from_metadata(folder: &Path, field: &str) -> Result<Option<String>> {

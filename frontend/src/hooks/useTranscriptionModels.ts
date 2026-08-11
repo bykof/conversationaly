@@ -6,6 +6,8 @@ import { LOCAL_PROVIDER } from '@/constants/modelDefaults';
 export interface RawModelInfo {
   name: string;
   size_mb: number;
+  /** Coverage blurb from the catalog, e.g. "English only", "Multilingual — 99 languages". */
+  languages: string;
   status: 'Available' | 'Missing' | { Downloading: { progress: number } } | { Error: string };
 }
 
@@ -14,6 +16,7 @@ export interface ModelOption {
   name: string;
   displayName: string;
   size_mb: number;
+  languages: string;
 }
 
 interface TranscriptModelConfig {
@@ -52,6 +55,7 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
           name: m.name,
           displayName: getModelLabel(m.name),
           size_mb: m.size_mb,
+          languages: m.languages,
         }));
     } catch (err) {
       console.error('Failed to fetch transcription models:', err);

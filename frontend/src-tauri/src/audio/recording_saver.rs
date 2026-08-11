@@ -130,7 +130,7 @@ impl RecordingSaver {
         // runs on the audio decode thread (see TRANSCRIPT_WRITE_INTERVAL).
         if let Some(folder) = &self.meeting_folder {
             if self.claim_transcript_write() {
-                if let Err(e) = self.write_transcripts_json(folder) {
+                if let Err(e) = self.write_transcript_files(folder) {
                     warn!("Failed to write incremental transcript update: {}", e);
                 }
             }
@@ -316,8 +316,8 @@ impl RecordingSaver {
         Ok(())
     }
 
-    /// Write transcripts.json to disk (atomic write with temp file and validation)
-    fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
+    /// Write transcripts.json + transcript.md to disk (atomic writes with temp files)
+    fn write_transcript_files(&self, folder: &PathBuf) -> Result<()> {
         // Clone segments to avoid holding lock during I/O
         let segments_clone = if let Ok(segments) = self.transcript_segments.lock() {
             segments.clone()
@@ -368,6 +368,21 @@ impl RecordingSaver {
             })?;
 
         info!("✅ Successfully wrote transcripts.json with {} segments", segments_clone.len());
+
+        // Human-readable mirror of the same segments. Best-effort: the JSON is
+        // what the app reads back, so a failed .md must not fail the recording.
+        let md_segments: Vec<(f64, &str)> = segments_clone
+            .iter()
+            .map(|s| (s.audio_start_time, s.text.as_str()))
+            .collect();
+        if let Err(e) = super::common::write_transcript_md(
+            folder,
+            self.meeting_name.as_deref(),
+            &md_segments,
+        ) {
+            warn!("Failed to write transcript.md: {}", e);
+        }
+
         Ok(())
     }
 
@@ -433,7 +448,7 @@ impl RecordingSaver {
 
         // Save final transcripts.json with validation
         if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
+            if let Err(e) = self.write_transcript_files(folder) {
                 error!("❌ Failed to write final transcripts: {}", e);
                 return Err(format!("Failed to save transcripts: {}", e));
             }

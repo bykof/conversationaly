@@ -770,10 +770,11 @@ fn selftest_audio(model_path: &str, mmproj_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Wrap an instruction in Gemma's turn format with the media marker in the user turn.
+/// Wrap an instruction in Gemma 4's turn format with the media marker in the user
+/// turn. Gemma 4 dropped Gemma 3's `<start_of_turn>`/`<end_of_turn>` tokens.
 fn gemma_audio_prompt(instruction: &str) -> String {
     format!(
-        "<start_of_turn>user\n{}\n{}<end_of_turn>\n<start_of_turn>model\n",
+        "<|turn>user\n{}\n{}<turn|>\n<|turn>model\n",
         llama_cpp_2::mtmd::mtmd_default_marker(),
         instruction
     )
@@ -1007,7 +1008,7 @@ mod tests {
         let prompt = gemma_audio_prompt("Transcribe this audio.");
         let marker = llama_cpp_2::mtmd::mtmd_default_marker();
         assert_eq!(prompt.matches(marker).count(), 1, "{prompt}");
-        assert!(prompt.contains("<start_of_turn>model\n"));
+        assert!(prompt.contains("<|turn>model\n"));
     }
 
     #[test]

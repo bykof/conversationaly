@@ -91,13 +91,6 @@ export function RetranscribeDialog({
     const name = selectedModelKey.slice(colonIndex + 1);
     return availableModels.find(m => m.provider === provider && m.name === name);
   }, [selectedModelKey, availableModels]);
-  const isParakeetModel = selectedModelDetails?.provider === 'local';
-
-  useEffect(() => {
-    if (isParakeetModel && selectedLang !== 'auto') {
-      setSelectedLang('auto');
-    }
-  }, [isParakeetModel, selectedLang]);
 
   // Reset state only when dialog transitions from closed to open
   // This prevents re-initialization when config changes while dialog is already open
@@ -200,7 +193,7 @@ export function RetranscribeDialog({
     setProgress(null);
 
     try {
-      const languageToSend = isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang;
+      const languageToSend = selectedLang === 'auto' ? null : selectedLang;
 
       await invoke('start_retranscription_command', {
         meetingId,
@@ -288,39 +281,31 @@ export function RetranscribeDialog({
 
         <div className="space-y-4 py-4">
           {!isProcessing && !error && (
-            !isParakeetModel ? (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <Globe className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Language</span>
-                </div>
-                <Select value={selectedLang} onValueChange={setSelectedLang}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select language" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60">
-                    {LANGUAGES.map((lang) => (
-                      <SelectItem key={lang.code} value={lang.code}>
-                        {lang.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Select a specific language to improve accuracy, or use auto-detect
-                </p>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Globe className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Language</span>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <Globe className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium">Language</span>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Language selection isn't supported for Parakeet. It always uses automatic detection.
-                </p>
-              </div>
-            )
+              <Select value={selectedLang} onValueChange={setSelectedLang}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select language" />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {LANGUAGES.map((lang) => (
+                    <SelectItem key={lang.code} value={lang.code}>
+                      {lang.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {/* Coverage is the catalog blurb; a language the model doesn't
+                  advertise is resolved back to auto-detect in the engine. */}
+              <p className="text-xs text-muted-foreground">
+                {selectedModelDetails?.languages
+                  ? `Model coverage: ${selectedModelDetails.languages}. Anything outside it falls back to auto-detect.`
+                  : 'Select a specific language to improve accuracy, or use auto-detect'}
+              </p>
+            </div>
           )}
 
           {!isProcessing && !error && availableModels.length > 0 && (

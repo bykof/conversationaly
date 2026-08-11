@@ -20,7 +20,7 @@
 use crate::audio::common::{split_segment_at_silence, LIVE_MAX_SEGMENT_SAMPLES};
 use crate::audio::transcription::ports::{Transcriber, TranscriptChunk, TranscriptSink};
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
-use crate::transcribe_engine::mean_token_confidence;
+use crate::transcribe_engine::{keep_partial_on_truncation, mean_token_confidence};
 use anyhow::Result;
 use log::warn;
 use std::collections::VecDeque;
@@ -57,7 +57,7 @@ impl Decoder {
     fn decode(&mut self, samples: &[f32]) -> Result<Option<(String, Option<f32>)>> {
         match self {
             Decoder::Local { session, run_options } => {
-                let transcript = session.run(samples, run_options)?;
+                let transcript = keep_partial_on_truncation(session.run(samples, run_options))?;
                 let text = transcript.text.trim().to_string();
                 if text.is_empty() {
                     return Ok(None);

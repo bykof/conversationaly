@@ -76,7 +76,7 @@ export function TranscriptButtonGroup({
             title="Retranscribe to enhance your recorded audio"
           >
             <RefreshCw className="xl:mr-2" size={18} />
-            <span className="hidden lg:inline">Enhance</span>
+            <span className="hidden lg:inline">Retranscribe</span>
           </Button>
         )}
       </ButtonGroup>

@@ -3,8 +3,8 @@
 use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_progress;
 use super::common::{
-    create_transcript_segments, split_segment_at_silence, write_transcripts_json,
-    MAX_SEGMENT_SAMPLES,
+    create_transcript_segments, markdown_segments, split_segment_at_silence, write_transcript_md,
+    write_transcripts_json, MAX_SEGMENT_SAMPLES,
 };
 use super::constants::AUDIO_EXTENSIONS;
 use crate::state::AppState;
@@ -447,6 +447,10 @@ async fn run_retranscription<R: Runtime>(
 
     if let Err(e) = write_transcripts_json(&folder_path, &segments) {
         warn!("Failed to write transcripts.json: {}", e);
+    }
+
+    if let Err(e) = write_transcript_md(&folder_path, None, &markdown_segments(&segments)) {
+        warn!("Failed to write transcript.md: {}", e);
     }
 
     // Find audio filename for metadata

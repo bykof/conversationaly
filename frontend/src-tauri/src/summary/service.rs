@@ -581,6 +581,9 @@ impl SummaryService {
                         meeting_id
                     );
                 }
+
+                crate::summary::metadata::write_summary_md(&pool, &meeting_id, &final_markdown)
+                    .await;
             }
             Err(e) => {
                 // Check if error is due to cancellation

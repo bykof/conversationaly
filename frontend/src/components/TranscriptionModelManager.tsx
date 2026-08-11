@@ -30,6 +30,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+
+/**
+ * Spelled-out language lists for the catalog's `languages` blurb, keyed by the
+ * blurb itself — an identical blurb means an identical language set. A blurb
+ * with no entry here simply gets no tooltip, so filling the rest in later is one
+ * line each. Only add a set you have checked against the model card.
+ */
+const LANGUAGE_DETAIL: Record<string, string> = {
+  // huggingface.co/nvidia/canary-1b-v2 and .../parakeet-tdt-0.6b-v3 — same 25.
+  'Multilingual — 25 European languages':
+    'Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, ' +
+    'French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, ' +
+    'Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, ' +
+    'Swedish, Ukrainian',
+};
 
 interface Props {
   selectedModel?: string;
@@ -152,7 +168,20 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
               </div>
               <div className="flex gap-1">
                 <dt className="sr-only">Languages</dt>
-                <dd>{model.languages}</dd>
+                <dd>
+                  {LANGUAGE_DETAIL[model.languages] ? (
+                    <Tooltip>
+                      <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-2">
+                        {model.languages}
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {LANGUAGE_DETAIL[model.languages]}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    model.languages
+                  )}
+                </dd>
               </div>
             </dl>
           </div>

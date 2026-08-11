@@ -6,6 +6,7 @@ use crate::state::AppState;
 use crate::summary::metadata::{
     read_detected_summary_language_from_metadata, read_summary_language_from_metadata,
     write_detected_summary_language_to_metadata, write_summary_language_to_metadata,
+    write_summary_md,
 };
 use crate::summary::language_detection::{
     detect_summary_language, SummaryLanguageDetection,
@@ -89,6 +90,12 @@ pub async fn api_save_meeting_summary<R: Runtime>(
     match SummaryProcessesRepository::update_meeting_summary(pool, &meeting_id, &summary).await {
         Ok(true) => {
             log_info!("Summary saved successfully for meeting_id: {}", meeting_id);
+
+            // Keep summary.md in step with user edits, or it goes stale immediately.
+            if let Some(markdown) = summary.get("markdown").and_then(|v| v.as_str()) {
+                write_summary_md(pool, &meeting_id, markdown).await;
+            }
+
             Ok(serde_json::json!({
                 "message": "Meeting summary saved successfully"
             }))

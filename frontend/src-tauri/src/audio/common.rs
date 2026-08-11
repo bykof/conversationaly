@@ -91,6 +91,68 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
     Ok(())
 }
 
+/// Segments in the (start seconds, text) shape [`write_transcript_md`] takes.
+pub(crate) fn markdown_segments(segments: &[TranscriptSegment]) -> Vec<(f64, &str)> {
+    segments
+        .iter()
+        .map(|s| (s.audio_start_time.unwrap_or(0.0), s.text.as_str()))
+        .collect()
+}
+
+/// Render a transcript as markdown: heading, an updated line, then one
+/// `[HH:MM:SS] text` paragraph per segment.
+pub(crate) fn transcript_markdown(meeting_name: Option<&str>, segments: &[(f64, &str)]) -> String {
+    let mut out = format!("# {}\n\n", meeting_name.unwrap_or("Meeting"));
+    out.push_str(&format!(
+        "_{} segments · updated {}_\n\n",
+        segments.len(),
+        chrono::Utc::now().to_rfc3339()
+    ));
+    for (start, text) in segments {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "[{}] {}\n\n",
+            crate::utils::format_timestamp(*start),
+            text
+        ));
+    }
+    out
+}
+
+/// Write transcript.md to a meeting folder (atomic write with temp file).
+///
+/// `meeting_name` falls back to metadata.json when the caller doesn't have it
+/// (retranscription only ever runs on a folder that already has one).
+pub(crate) fn write_transcript_md(
+    folder: &Path,
+    meeting_name: Option<&str>,
+    segments: &[(f64, &str)],
+) -> Result<()> {
+    let fallback_name = meeting_name.is_none().then(|| meeting_name_from_metadata(folder)).flatten();
+    let markdown = transcript_markdown(meeting_name.or(fallback_name.as_deref()), segments);
+
+    let md_path = folder.join("transcript.md");
+    let temp_path = folder.join(".transcript.md.tmp");
+    std::fs::write(&temp_path, &markdown)?;
+    std::fs::rename(&temp_path, &md_path)?;
+
+    debug!("Wrote transcript.md with {} segments", segments.len());
+    Ok(())
+}
+
+fn meeting_name_from_metadata(folder: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(folder.join("metadata.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("meeting_name")?
+        .as_str()
+        .map(str::to_string)
+        .filter(|s| !s.trim().is_empty())
+}
+
 /// Read the configured local transcription model from the database.
 ///
 /// Only the local transcribe.cpp engine runs file work. A stored built-in audio
@@ -280,5 +342,40 @@ mod tests {
 
         acquired_rx.await.unwrap();
         waiter.await.unwrap();
+    }
+
+    #[test]
+    fn transcript_markdown_has_heading_and_stamped_segments() {
+        let md = transcript_markdown(
+            Some("Team Standup"),
+            &[(0.0, "Hello everyone."), (3725.5, "  Wrapping up.  "), (10.0, "   ")],
+        );
+
+        assert!(md.starts_with("# Team Standup\n\n"), "{md}");
+        assert!(md.contains("[00:00:00] Hello everyone.\n\n"), "{md}");
+        assert!(md.contains("[01:02:05] Wrapping up.\n\n"), "{md}");
+        assert!(!md.contains("[00:00:10]"), "blank segments are skipped: {md}");
+    }
+
+    #[test]
+    fn transcript_markdown_falls_back_to_generic_heading() {
+        assert!(transcript_markdown(None, &[]).starts_with("# Meeting\n\n"));
+    }
+
+    /// Retranscription passes no name, so the heading comes from metadata.json.
+    #[test]
+    fn write_transcript_md_takes_name_from_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"meeting_name": "Design Review"}"#,
+        )
+        .unwrap();
+
+        write_transcript_md(dir.path(), None, &[(0.0, "Hello.")]).unwrap();
+
+        let md = std::fs::read_to_string(dir.path().join("transcript.md")).unwrap();
+        assert!(md.starts_with("# Design Review\n\n"), "{md}");
+        assert!(md.contains("[00:00:00] Hello.\n\n"), "{md}");
     }
 }

@@ -19,16 +19,11 @@ function commandExists(cmd) {
 function detectGPU() {
   const platform = os.platform();
 
-  // macOS: Metal is always available, check for Apple Silicon for CoreML
+  // macOS: Metal is always available. transcribe.cpp has no CoreML path, so
+  // Apple Silicon and Intel take the same one.
   if (platform === 'darwin') {
-    const arch = os.arch();
-    if (arch === 'arm64') {
-      console.log('🍎 Apple Silicon detected - using Metal + CoreML');
-      return 'coreml'; // CoreML includes Metal
-    } else {
-      console.log('🍎 macOS Intel detected - using Metal');
-      return 'metal';
-    }
+    console.log('🍎 macOS detected - using Metal');
+    return 'metal';
   }
 
   // Windows/Linux: Check for GPUs
@@ -49,8 +44,8 @@ function detectGPU() {
     if (platform === 'linux' && commandExists('rocm-smi')) {
       const rocmPath = process.env.ROCM_PATH;
       if (rocmPath || commandExists('hipcc')) {
-        console.log('🔴 AMD GPU detected with ROCm - using HIPBlas acceleration');
-        return 'hipblas';
+        console.log('🔴 AMD GPU detected with ROCm - using ROCm acceleration');
+        return 'rocm';
       } else {
         console.log('⚠️  AMD GPU detected but ROCm not installed - falling back to CPU');
         return null;
@@ -59,25 +54,14 @@ function detectGPU() {
 
     // Check for Vulkan
     if (commandExists('vulkaninfo') || (platform === 'win32' && require('fs').existsSync('C:\\VulkanSDK'))) {
-      const vulkanSdk = process.env.VULKAN_SDK;
-      const blasInclude = process.env.BLAS_INCLUDE_DIRS;
-
-      if (vulkanSdk && blasInclude) {
+      if (process.env.VULKAN_SDK) {
         console.log('🔵 Vulkan detected with all dependencies - using Vulkan acceleration');
         return 'vulkan';
       } else {
         console.log('⚠️  Vulkan detected but missing dependencies - falling back to CPU');
-        if (!vulkanSdk) console.log('   Missing: VULKAN_SDK environment variable');
-        if (!blasInclude) console.log('   Missing: BLAS_INCLUDE_DIRS environment variable');
+        console.log('   Missing: VULKAN_SDK environment variable');
         return null;
       }
-    }
-
-    // Check if OpenBLAS is available
-    const blasInclude = process.env.BLAS_INCLUDE_DIRS;
-    if (blasInclude) {
-      console.log('📊 OpenBLAS detected - using CPU with BLAS optimization');
-      return 'openblas';
     }
   }
 

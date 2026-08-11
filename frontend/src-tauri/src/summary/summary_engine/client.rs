@@ -236,8 +236,8 @@ pub async fn transcribe_with_builtin(
         stop_tokens: Some(model_def.sampling.stop_tokens.clone()),
     };
 
-    let text = send_to_sidecar(app_data_dir, &model_path, request, None).await?;
-    Ok(strip_thinking(&text).trim().to_string())
+    // send_to_sidecar strips thinking and trims for every caller.
+    send_to_sidecar(app_data_dir, &model_path, request, None).await
 }
 
 /// Encode f32 samples as base64 f32 little-endian PCM.
@@ -252,15 +252,25 @@ fn audio_to_b64(samples: &[f32]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// Drop a leading thinking block.
+/// Drop thinking blocks from a sidecar response.
 ///
-/// Gemma 4 turns thinking on by default for audio. The prompt asks it not to, but a
-/// model under an unfamiliar acoustic input still occasionally emits one, and a
-/// transcript containing the model's deliberations is worse than a short one.
-fn strip_thinking(text: &str) -> &str {
-    match text.split_once("</think>") {
-        Some((_, after)) => after,
-        None => text,
+/// The templates ask every model not to think, but one under an unfamiliar input —
+/// audio, or a very long transcript — still occasionally does, and its
+/// deliberations in a summary or transcript are worse than nothing.
+///
+/// Gemma 4 marks thinking with `<|channel>thought … <channel|>`; the channel-split
+/// below is the same logic as the `strip_thinking` macro in Google's own chat
+/// template, so it survives multiple channels and text on either side of them.
+/// ChatML families use `</think>`.
+fn strip_thinking(text: &str) -> String {
+    let without_channels: String = text
+        .split("<channel|>")
+        .map(|part| part.split("<|channel>").next().unwrap_or(part))
+        .collect();
+
+    match without_channels.split_once("</think>") {
+        Some((_, after)) => after.to_string(),
+        None => without_channels,
     }
 }
 
@@ -336,7 +346,7 @@ async fn send_to_sidecar(
                 Err(anyhow!("Generation failed: {}", err_msg))
             } else {
                 log::info!("Generation completed: {} chars", text.len());
-                Ok(text)
+                Ok(strip_thinking(&text).trim().to_string())
             }
         }
         Response::Error { message } => Err(anyhow!("Sidecar error: {}", message)),
@@ -428,6 +438,22 @@ mod tests {
         assert!(json.contains("\"frequency_penalty\":0.0"));
         assert!(json.contains("\"repeat_penalty\":1.05"));
         assert!(json.contains("\"penalty_last_n\":256"));
+    }
+
+    #[test]
+    fn strip_thinking_drops_gemma4_channels_and_chatml_blocks() {
+        // The reported symptom: a thought channel in the middle of a summary.
+        assert_eq!(
+            strip_thinking("# Notes\n<|channel>thought\nlet me plan\n<channel|>- point"),
+            "# Notes\n- point"
+        );
+        // Several channels, and one left unterminated at the end.
+        assert_eq!(
+            strip_thinking("a<|channel>thought\nx<channel|>b<|channel>thought\ntail"),
+            "ab"
+        );
+        assert_eq!(strip_thinking("<think>plan</think>answer"), "answer");
+        assert_eq!(strip_thinking("plain summary"), "plain summary");
     }
 
     #[test]

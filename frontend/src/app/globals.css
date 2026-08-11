@@ -79,15 +79,20 @@
 
     /* --- layout --------------------------------------------------------- */
     --measure: 68ch;
-    --rail-w: 16rem;
+    /* Pane defaults. A drag overrides these on the root element (see
+       lib/panes.ts) and a double-click on a divider removes the override, so
+       the defaults have to live here and nowhere else. */
+    --rail-w: 19rem;
     --rail-w-collapsed: 3.5rem;
+    --pane-transcript: 22.5rem;
     /* One left axis for the rail. Every zone insets by the gutter and every
        row pads by it again, so icons land on a single vertical line at
        2×gutter and labels at 2×gutter + icon + gap. Available as `px-gutter`.
        Changing this moves the whole rail together — that is the point. */
     --rail-gutter: 0.5rem;
-    /* Live width of the sidebar rail. Sidebar writes this; the recording
-       transport and overlays read it instead of duplicating the math. */
+    /* Live width of the sidebar rail — collapse state and the 40vw ceiling
+       already applied. AppShell writes this; the rail itself, the recording
+       transport and the overlays all read it instead of redoing the math. */
     --rail: var(--rail-w);
 
     /* --- z-index -------------------------------------------------------- */
@@ -404,6 +409,15 @@
   overflow: visible !important;
   background: transparent !important;
   font-family: var(--font-serif), ui-serif, Georgia, serif !important;
+}
+
+/* BlockNote ships a 54px gutter on both sides. The left one is real estate —
+   the drag and insert handles live in it — but the right one holds nothing,
+   and stacked on the panel's own inset it cost the document 156px of measure.
+   Keep the left, trim the right; the panel contributes no horizontal padding
+   of its own, so the summary now runs the full width of its pane. */
+.bn-editor {
+  padding-inline: 3.375rem 1.5rem !important;
 }
 
 .bn-container {

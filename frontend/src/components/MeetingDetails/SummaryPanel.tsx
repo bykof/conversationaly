@@ -253,7 +253,8 @@ export function SummaryPanel({
 
   return (
     // The review surface: a document, so it sits on the canvas rather than a
-    // panel tint, and its measure is capped for reading.
+    // panel tint. It runs the full width of the pane — the divider sets the
+    // measure, not a token.
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
       {/* Title area */}
       <div className="border-b border-line px-5 py-3">
@@ -340,7 +341,7 @@ export function SummaryPanel({
             <div
               role="status"
               aria-live="polite"
-              className="mx-auto max-w-measure space-y-6 pt-2"
+              className="space-y-6 pt-2"
             >
               <span className="sr-only">Generating summary</span>
               {[0, 1, 2].map((section) => (
@@ -434,8 +435,10 @@ export function SummaryPanel({
               ) : null}
             </div>
           )}
-          {/* Reading measure — the summary is prose, not a dashboard. */}
-          <div className="mx-auto w-full max-w-measure px-6 py-6">
+          {/* Full pane width, no reading measure: the summary carries tables
+              and action-item grids as often as prose, and those need the room.
+              The pane's own width is the measure — drag the divider to set it. */}
+          <div className="w-full py-6">
             <BlockNoteSummaryView
               ref={summaryRef}
               summaryData={aiSummary}
@@ -457,7 +460,7 @@ export function SummaryPanel({
           {summaryStatus !== 'idle' && summaryStatus !== 'completed' && (
             <div
               role="status"
-              className={`mx-auto mb-6 max-w-measure rounded-md border px-3 py-2 ${
+              className={`mx-6 mb-6 rounded-md border px-3 py-2 ${
                 summaryStatus === 'error'
                   ? 'border-danger/30 bg-danger-soft text-danger-ink'
                   : 'border-info/30 bg-info-soft text-info-ink'

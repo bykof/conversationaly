@@ -6,6 +6,7 @@ import Sidebar from '@/components/Sidebar'
 import { SidebarProvider, useSidebar } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
+import { PANES_INIT_SCRIPT } from '@/lib/panes'
 import { toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { AppToaster } from '@/components/AppToaster'
@@ -56,8 +57,10 @@ const plexMono = IBM_Plex_Mono({
 const fontVars = `${plexSans.variable} ${plexSerif.variable} ${plexMono.variable}`
 
 /**
- * Publishes the live rail width as `--rail` so the content column and every
- * fixed-position child (recording transport, status overlays) read one value.
+ * Publishes the live rail width as `--rail` so the rail itself, the content
+ * column and every fixed-position child (recording transport, status overlays)
+ * read one value. The `min()` is the safety net for a user-widened rail meeting
+ * a shrunk window — it can never take more than 40% of it.
  */
 function AppShell({ children }: { children: React.ReactNode }) {
   const { isCollapsed } = useSidebar()
@@ -67,7 +70,9 @@ function AppShell({ children }: { children: React.ReactNode }) {
       className="flex"
       style={
         {
-          '--rail': isCollapsed ? 'var(--rail-w-collapsed)' : 'var(--rail-w)',
+          '--rail': isCollapsed
+            ? 'var(--rail-w-collapsed)'
+            : 'min(var(--rail-w), 40vw)',
         } as React.CSSProperties
       }
     >
@@ -279,6 +284,8 @@ export default function RootLayout({
       <body className={`${fontVars} font-sans`}>
         {/* Resolves the theme before first paint — no flash of the wrong one. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Same trick for dragged pane widths — no flash of the default rail. */}
+        <script dangerouslySetInnerHTML={{ __html: PANES_INIT_SCRIPT }} />
         <RecordingStateProvider>
           <TranscriptProvider>
             <ConfigProvider>

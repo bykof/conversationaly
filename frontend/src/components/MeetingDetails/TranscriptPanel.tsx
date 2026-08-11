@@ -4,6 +4,7 @@ import { Transcript, TranscriptSegmentData } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
+import { PaneDivider } from '@/components/PaneDivider';
 import { useMemo } from 'react';
 
 interface TranscriptPanelProps {
@@ -65,10 +66,16 @@ export function TranscriptPanel({
   }, [transcripts, usePagination, segments]);
 
   return (
-    // Fixed reference-pane width rather than a percentage: at 1/4 of a wide
-    // window the transcript sprawls, and below `md` the old rule hid it
-    // entirely with no way to reach it.
-    <div className="relative flex w-[290px] shrink-0 flex-col border-r border-line bg-panel xl:w-[360px]">
+    // User-set width (`--pane-transcript`, dragged via the divider below), not
+    // a percentage: at 1/4 of a wide window the transcript sprawls. The
+    // `max-w` is the safety net — whatever the stored width, the summary keeps
+    // 20rem, so shrinking the window can never squeeze it out.
+    <div
+      className="relative flex max-w-[calc(100%-20rem)] shrink-0 flex-col border-r border-line bg-panel"
+      style={{ width: 'var(--pane-transcript)' }}
+    >
+      <PaneDivider pane="transcript" label="Resize transcript" />
+
       {/* Title area */}
       <div className="border-b border-line p-3">
         <TranscriptButtonGroup
