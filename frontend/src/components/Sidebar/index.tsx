@@ -23,7 +23,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
-import { useConfig } from '@/contexts/ConfigContext';
 import { cn } from '@/lib/utils';
 
 import { Dialog, DialogContent, DialogFooter, DialogTitle } from '@/components/ui/dialog';
@@ -134,7 +133,6 @@ const Sidebar: React.FC = () => {
 
   const { isRecording } = useRecordingState();
   const { openImportDialog } = useImportDialog();
-  const { betaFeatures } = useConfig();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -379,24 +377,23 @@ const Sidebar: React.FC = () => {
             </Button>
           )}
 
-          {betaFeatures.importAndRetranscribe &&
-            (isCollapsed ? (
-              <RailRow
-                iconOnly
-                icon={Upload}
-                label="Import audio"
-                onClick={() => openImportDialog()}
-              />
-            ) : (
-              <Button
-                onClick={() => openImportDialog()}
-                variant="outline"
-                className="mt-1.5 h-8 w-full gap-2 text-sm"
-              >
-                <Upload className="h-3.5 w-3.5" aria-hidden />
-                Import audio
-              </Button>
-            ))}
+          {isCollapsed ? (
+            <RailRow
+              iconOnly
+              icon={Upload}
+              label="Import audio"
+              onClick={() => openImportDialog()}
+            />
+          ) : (
+            <Button
+              onClick={() => openImportDialog()}
+              variant="outline"
+              className="mt-1.5 h-8 w-full gap-2 text-sm"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden />
+              Import audio
+            </Button>
+          )}
         </div>
 
         {/* 3 · Find */}

@@ -4,8 +4,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { SelectedDevices } from '@/components/DeviceSelection';
 import { configService, ModelConfig } from '@/services/configService';
+import { RECOMMENDED_SUMMARY_MODEL } from '@/lib/onboarding-summary-model';
 import { invoke } from '@tauri-apps/api/core';
-import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from '@/types/betaFeatures';
 
 export interface OllamaModel {
   name: string;
@@ -62,10 +62,6 @@ interface ConfigContextType {
   showConfidenceIndicator: boolean;
   toggleConfidenceIndicator: (checked: boolean) => void;
 
-  // Beta features
-  betaFeatures: BetaFeatures;
-  toggleBetaFeature: (featureKey: BetaFeatureKey, enabled: boolean) => void;
-
   // Ollama models
   models: OllamaModel[];
   modelOptions: Record<ModelConfig['provider'], string[]>;
@@ -96,10 +92,13 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
 
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
-  // Model configuration state
+  // Model configuration state. This is also the effective config on a fresh install,
+  // since api_get_model_config returns None until something is saved — so it has to be
+  // the bundled sidecar, not Ollama, or the app probes localhost:11434 before any
+  // saved config arrives.
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
-    provider: 'ollama',
-    model: 'llama3.2:latest',
+    provider: 'builtin-ai',
+    model: RECOMMENDED_SUMMARY_MODEL,
     whisperModel: 'large-v3',
     ollamaEndpoint: null
   });
@@ -162,11 +161,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     return false;
   });
 
-  // Beta features state (localStorage)
-  const [betaFeatures, setBetaFeatures] = useState<BetaFeatures>(() => {
-    return loadBetaFeatures();
-  });
-
   // Preference settings state (lazy loaded)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
   const [storageLocations, setStorageLocations] = useState<StorageLocations | null>(null);
@@ -174,8 +168,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const preferencesLoadedRef = useRef(false);
   const isLoadingRef = useRef(false);
 
-  // Load Ollama models (uses saved endpoint, re-runs when endpoint changes after config load)
+  // Load Ollama models (uses saved endpoint, re-runs when endpoint changes after config load).
+  // Only while Ollama is the selected provider: it is one optional summary backend next to
+  // the bundled llama-helper sidecar, so probing localhost:11434 on every launch just
+  // produces a connection error for the users who never installed it.
   useEffect(() => {
+    if (modelConfig.provider !== 'ollama') {
+      setError('');
+      return;
+    }
+
     const loadModels = async () => {
       try {
         const endpoint = modelConfig.ollamaEndpoint || null;
@@ -188,7 +190,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       }
     };
     loadModels();
-  }, [modelConfig.ollamaEndpoint]);
+  }, [modelConfig.provider, modelConfig.ollamaEndpoint]);
 
   // Load transcript configuration on mount
   useEffect(() => {
@@ -388,15 +390,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Toggle beta feature with localStorage persistence
-  const toggleBetaFeature = useCallback((featureKey: BetaFeatureKey, enabled: boolean) => {
-    setBetaFeatures(prev => {
-      const updated = { ...prev, [featureKey]: enabled };
-      saveBetaFeatures(updated);
-      return updated;
-    });
-  }, []);
-
   // Update individual provider API key
   const updateProviderApiKey = useCallback((provider: string, apiKey: string | null) => {
     setProviderApiKeys(prev => ({ ...prev, [provider]: apiKey }));
@@ -489,8 +482,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setSelectedLanguage: handleSetSelectedLanguage,
     showConfidenceIndicator,
     toggleConfidenceIndicator,
-    betaFeatures,
-    toggleBetaFeature,
     models,
     modelOptions,
     error,
@@ -511,8 +502,6 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     handleSetSelectedLanguage,
     showConfidenceIndicator,
     toggleConfidenceIndicator,
-    betaFeatures,
-    toggleBetaFeature,
     models,
     modelOptions,
     error,

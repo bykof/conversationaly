@@ -153,6 +153,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
     // Setup virtualizer for efficient rendering of large lists
     const virtualizer = useVirtualizer({
+        // `virtualizer.measureElement` is attached as a ref (below), so react-virtual's
+        // internal re-render notify fires during React's commit phase. Its default
+        // path wraps that in flushSync, which React rejects with "flushSync was
+        // called from inside a lifecycle method". Same for `_willUpdate` notifying
+        // while `isScrolling`. Batched re-render is fine here — heights settle on
+        // the next paint.
+        useFlushSync: false,
         count: segments.length,
         getScrollElement: () => scrollRef.current,
         estimateSize: () => 60, // Estimated height per segment

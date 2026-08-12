@@ -598,7 +598,7 @@ pub struct RetranscriptionStarted {
     pub message: String,
 }
 
-// Start retranscription (Beta gated using configContext.betaFeatures)
+// Start retranscription
 #[tauri::command]
 pub async fn start_retranscription_command<R: Runtime>(
     app: AppHandle<R>,
