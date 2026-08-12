@@ -884,7 +884,7 @@ checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
 name = "conversationaly"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
