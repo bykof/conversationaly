@@ -5,8 +5,8 @@ description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
 repository = "https://github.com/bykof/conversationaly"
-edition = "2021"
-rust-version = "1.77"
+edition.workspace = true
+rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -55,7 +55,7 @@ openmp = ["transcribe-cpp/openmp"] # OpenMP parallel processing
 tauri-build = { version = "2.3.0", features = [] }
 reqwest = { version = "0.13", features = ["blocking", "multipart", "json", "stream"] }
 which = "8.0"
-zip = "2.2"           # ZIP extraction (Windows, macOS)
+zip = "8.6"           # ZIP extraction (Windows, macOS)
 tar = "0.4"           # TAR extraction (Linux)
 xz2 = "0.1"           # XZ decompression (Linux)
 
@@ -64,7 +64,7 @@ xz2 = "0.1"           # XZ decompression (Linux)
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
-base64 = "0.22" # Audio payloads for the Ollama transcription provider
+base64 = "0.23" # Audio payloads for the Ollama transcription provider
 once_cell = "1.17.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
@@ -116,7 +116,7 @@ rayon = "1.10"
 rubato = "5.0"
 ringbuf = "0.5"
 tempfile = "3.3.0"
-whatlang = "0.16.4"
+whatlang = "0.18"
 
 ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", branch = "main" }
 
@@ -133,7 +133,7 @@ tauri-plugin-process = "2.3.0"
 
 # Desktop-only single instance guard
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "=2.3.7"
+tauri-plugin-single-instance = "2.4"
 
 # macOS-specific dependencies with Metal GPU acceleration
 [target.'cfg(target_os = "macos")'.dependencies]

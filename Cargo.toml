@@ -8,7 +8,10 @@ members = [
 # Shared workspace settings
 [workspace.package]
 edition = "2021"
-rust-version = "1.77"
+# 1.88 is the floor set by zip 8 (build-dependency); tauri-plugin-single-instance
+# 2.4 needs 1.77.2. Nothing here uses 2024-edition features — this tracks the
+# dependency graph, not our own code.
+rust-version = "1.88"
 
 # Shared dependencies that can be inherited by workspace members
 [workspace.dependencies]
