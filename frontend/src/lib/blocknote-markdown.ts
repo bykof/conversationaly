@@ -1,7 +1,8 @@
 import type { Block } from "@blocknote/core";
 
 interface MarkdownCapableEditor {
-  blocksToMarkdownLossy: (blocks: Block[]) => Promise<string>;
+  // Sync since BlockNote 0.53, a Promise before it. `await` below covers both.
+  blocksToMarkdownLossy: (blocks: Block[]) => string | Promise<string>;
 }
 
 interface MarkdownConversionOptions {

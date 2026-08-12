@@ -11,15 +11,13 @@ interface DialogProps {
 }
 
 export function CustomDialog({ triggerComponent, dialogContent, dialogTitle = "Dialog" }: DialogProps) {
-    // Clone the trigger component to ensure it can receive refs
-    const clonedTrigger = React.cloneElement(triggerComponent, {
-        ...triggerComponent.props
-    });
-
     return (
         <Dialog>
+            {/* asChild forwards the ref onto this element; cloning it with its
+                own props back was a no-op, and React 19 types `props` as
+                unknown, so the spread no longer compiles. */}
             <DialogTrigger asChild>
-                {clonedTrigger}
+                {triggerComponent}
             </DialogTrigger>
             <DialogContent aria-describedby={undefined}>
                 <VisuallyHidden>

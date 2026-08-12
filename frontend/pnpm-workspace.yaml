@@ -1,8 +1,15 @@
 # pnpm 11 no longer reads the "pnpm" field in package.json; overrides live here.
-# ProseMirror must stay single-instanced for BlockNote/Tiptap (see next.config.js aliases).
+# ProseMirror must stay single-instanced for BlockNote/Tiptap: BlockNote and
+# @tiptap/pm pull overlapping ranges, and without these pins pnpm installs two
+# copies of each, which breaks ProseMirror's instanceof checks.
+#
+# Overrides bypass semver validation, so these MUST be bumped whenever BlockNote
+# is bumped -- a stale pin installs silently and fails at runtime instead. That
+# is what pinning prosemirror-transform at 1.10.4 did: BlockNote 0.53 calls
+# Transform.changedRange(), added in 1.12.0.
 overrides:
-  prosemirror-model: 1.25.3
-  prosemirror-state: 1.4.3
-  prosemirror-view: 1.41.3
-  prosemirror-transform: 1.10.4
-  prosemirror-tables: 1.8.1
+  prosemirror-model: 1.25.11
+  prosemirror-state: 1.4.4
+  prosemirror-view: 1.42.2
+  prosemirror-transform: 1.12.0
+  prosemirror-tables: 1.8.5
