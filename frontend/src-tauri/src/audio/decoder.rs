@@ -9,12 +9,12 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use super::audio_processing::{audio_to_mono, resample, resample_audio};
 use super::ffmpeg::find_ffmpeg_path;
@@ -432,36 +432,43 @@ pub fn decode_audio_file_with_progress(
         hint.with_extension(ext);
     }
 
-    // Probe the file format
-    let probed = symphonia::default::get_probe()
-        .format(
+    // Probe the file format. Symphonia 0.6 returns the FormatReader directly
+    // (no ProbeResult wrapper) and takes the options by value.
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
 
-    let mut format = probed.format;
-
-    // Find the first audio track
+    // Find the first audio track. 0.6 replaced the `codec != CODEC_TYPE_NULL`
+    // sentinel with an optional, typed CodecParameters enum.
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|t| t.codec_params.as_ref().is_some_and(CodecParameters::is_audio))
         .ok_or_else(|| anyhow!("No audio track found in file"))?;
 
     let track_id = track.id;
+    let track_num_frames = track.num_frames;
+
+    let Some(CodecParameters::Audio(audio_params)) = track.codec_params.as_ref() else {
+        return Err(anyhow!("No audio track found in file"));
+    };
+    // Cloned so the immutable borrow of `format` ends here: the decode loop
+    // below needs `format` mutably for next_packet().
+    let audio_params = audio_params.clone();
 
     // Get audio parameters
-    let sample_rate = track
-        .codec_params
+    let sample_rate = audio_params
         .sample_rate
         .ok_or_else(|| anyhow!("Unknown sample rate"))?;
 
-    let mut channels = track
-        .codec_params
+    let mut channels = audio_params
         .channels
+        .as_ref()
         .map(|c| c.count() as u16)
         .unwrap_or(1);
 
@@ -472,15 +479,17 @@ pub fn decode_audio_file_with_progress(
 
     // Create the decoder
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
 
-    // Decode all packets
+    // Decode all packets. 0.6 drops SampleBuffer: a decoded buffer converts
+    // itself into interleaved samples, so this scratch Vec is the whole dance.
     let mut all_samples: Vec<f32> = Vec::new();
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut chunk: Vec<f32> = Vec::new();
 
     // Calculate expected samples for progress tracking
-    let expected_duration = track.codec_params.n_frames
+    // (n_frames moved off codec_params onto the Track itself in 0.6)
+    let expected_duration = track_num_frames
         .map(|frames| frames as f64 / sample_rate as f64);
     let expected_samples = expected_duration
         .map(|dur| (dur * sample_rate as f64 * channels as f64) as usize);
@@ -488,15 +497,11 @@ pub fn decode_audio_file_with_progress(
     let mut last_progress = 0u32;
 
     loop {
-        // Get the next packet
+        // Get the next packet. In 0.6 end-of-stream is Ok(None) rather than an
+        // IoError(UnexpectedEof), so a clean EOF no longer looks like an error.
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                // End of file
-                break;
-            }
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(e) => {
                 warn!("Error reading packet: {}", e);
                 break;
@@ -504,34 +509,28 @@ pub fn decode_audio_file_with_progress(
         };
 
         // Skip packets from other tracks
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         // Decode the packet
         match decoder.decode(&packet) {
             Ok(decoded) => {
-                // Initialize sample buffer if needed
-                if sample_buf.is_none() {
-                    let spec = *decoded.spec();
-                    let duration = decoded.capacity() as u64;
-                    // Detect actual channel count from decoded audio (metadata may be wrong/missing)
-                    let actual_channels = spec.channels.count() as u16;
-                    if actual_channels != channels {
-                        info!(
-                            "Channel count corrected: metadata={} actual={} (using actual)",
-                            channels, actual_channels
-                        );
-                        channels = actual_channels;
-                    }
-                    sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
+                // Detect actual channel count from decoded audio (metadata may be wrong/missing)
+                let actual_channels = decoded.spec().channels().count() as u16;
+                if actual_channels != channels {
+                    info!(
+                        "Channel count corrected: metadata={} actual={} (using actual)",
+                        channels, actual_channels
+                    );
+                    channels = actual_channels;
                 }
 
-                // Copy samples to buffer
-                if let Some(ref mut buf) = sample_buf {
-                    buf.copy_interleaved_ref(decoded);
-                    all_samples.extend_from_slice(buf.samples());
-                }
+                // Copy samples out as interleaved f32, same layout the old
+                // SampleBuffer produced. copy_to_vec_interleaved clears and
+                // resizes `chunk` itself, so it is reused, not re-allocated.
+                decoded.copy_to_vec_interleaved(&mut chunk);
+                all_samples.extend_from_slice(&chunk);
 
                 // Emit progress updates (every 10%)
                 if let (Some(callback), Some(expected)) = (&progress_callback, expected_samples) {
@@ -800,6 +799,45 @@ mod tests {
         assert!((result[0] - 0.5).abs() < 0.001); // preserved
         assert_eq!(result[1], 0.0); // infinity → 0
         assert!((result[2] - (-0.3)).abs() < 0.001); // preserved
+    }
+
+    #[test]
+    /// Decodes a real file end to end through symphonia. Everything else in
+    /// this module tests helpers that run on samples already in memory, so
+    /// without this the probe/decode loop itself had no coverage at all — a
+    /// symphonia upgrade could rewrite it and the suite would still pass.
+    /// Skips when the fixture is absent, like the import.rs tests do.
+    #[test]
+    fn test_decode_audio_file_real_wav() {
+        let test_path = Path::new("../../backend/whisper.cpp/samples/jfk.wav");
+        if !test_path.exists() {
+            return;
+        }
+
+        let decoded = decode_audio_file(test_path).expect("jfk.wav should decode");
+
+        assert_eq!(decoded.sample_rate, 16_000, "jfk.wav is a 16kHz fixture");
+        assert_eq!(decoded.channels, 1, "jfk.wav is mono");
+
+        // The file is a ~11s clip. Guard the real range rather than `> 0`, so a
+        // decode loop that silently drops packets (or stops at the first one)
+        // fails here instead of looking fine.
+        assert!(
+            decoded.duration_seconds > 10.0 && decoded.duration_seconds < 12.0,
+            "expected ~11s, got {}",
+            decoded.duration_seconds
+        );
+        assert_eq!(
+            decoded.samples.len(),
+            (decoded.duration_seconds * decoded.sample_rate as f64) as usize,
+            "sample count must agree with the reported duration"
+        );
+
+        // Real speech, so it must be audible and in range — catches a buffer
+        // conversion that yields silence or unnormalized garbage.
+        let peak = decoded.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.01, "decoded audio is silent (peak {peak})");
+        assert!(peak <= 1.0, "sample out of [-1,1] range (peak {peak})");
     }
 
     #[test]

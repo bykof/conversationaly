@@ -3,8 +3,15 @@ use chrono::Utc;
 use log::{debug, info, warn};
 use realfft::num_complex::{Complex32, ComplexFloat};
 use realfft::RealFftPlanner;
+// rubato 5 replaced SincFixedIn with the unified `Async` resampler
+// (FixedAsync::Input is the same "fixed input size, varying output" mode), and
+// moved I/O onto the audioadapter buffer traits it re-exports. Mono audio is a
+// flat interleaved slice, so InterleavedSlice wraps our &[f32] with no copy and
+// without the old Vec<Vec<f32>> per call.
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
 };
 use std::path::PathBuf;
 use nnnoiseless::DenoiseState;
@@ -581,27 +588,32 @@ pub fn resample(input: &[f32], from_sample_rate: u32, to_sample_rate: u32) -> Re
 
     let params = SincInterpolationParameters {
         sinc_len,
-        f_cutoff: 0.95,                      // Preserve most of the frequency content
+        // Some(_) since rubato 5: None lets it choose a cutoff automatically,
+        // but 0.95 is the value this pipeline has always used — keep it explicit
+        // rather than silently changing the filter as part of an upgrade.
+        f_cutoff: Some(0.95),                // Preserve most of the frequency content
         interpolation: interpolation_type,
         oversampling_factor: oversampling,
         window: WindowFunction::BlackmanHarris2,  // Best window for audio
     };
 
-    let mut resampler = SincFixedIn::<f32>::new(
+    let mut resampler = Async::<f32>::new_sinc(
         ratio,
         2.0,  // Maximum relative deviation
-        params,
+        &params,
         input.len(),
         1,    // Mono
+        FixedAsync::Input,
     )?;
 
-    let waves_in = vec![input.to_vec()];
-    let waves_out = resampler.process(&waves_in, None)?;
+    let waves_in = InterleavedSlice::new(input, 1, input.len())
+        .map_err(|e| anyhow::anyhow!("Failed to wrap input for resampling: {e}"))?;
+    let waves_out = resampler.process(&waves_in, None)?.take_data();
 
     debug!("Resampling complete: {} samples → {} samples",
-           input.len(), waves_out[0].len());
+           input.len(), waves_out.len());
 
-    Ok(waves_out.into_iter().next().unwrap())
+    Ok(waves_out)
 }
 
 // Alias for compatibility with existing code
@@ -629,7 +641,7 @@ pub fn resample_audio(input: &[f32], from_sample_rate: u32, to_sample_rate: u32)
 /// 8kHz and 24kHz folded back down on top of the speech the model was trying to
 /// read. That is heard as a model that mishears words, not as an audio bug.
 pub struct StreamingDownsampler16k {
-    resampler: Option<SincFixedIn<f32>>,
+    resampler: Option<Async<f32>>,
     source_rate: u32,
     /// Input samples not yet forming a whole resampler chunk. Carried between
     /// calls so no audio is lost at a chunk boundary.
@@ -651,7 +663,7 @@ impl StreamingDownsampler16k {
         // resampler already makes.
         let params = SincInterpolationParameters {
             sinc_len: 64,
-            f_cutoff: 0.95,
+            f_cutoff: Some(0.95),
             interpolation: SincInterpolationType::Linear,
             oversampling_factor: 128,
             window: WindowFunction::BlackmanHarris2,
@@ -660,12 +672,13 @@ impl StreamingDownsampler16k {
         let resampler = if source_rate == Self::TARGET_RATE {
             None
         } else {
-            match SincFixedIn::<f32>::new(
+            match Async::<f32>::new_sinc(
                 Self::TARGET_RATE as f64 / source_rate as f64,
                 2.0,
-                params,
+                &params,
                 chunk,
                 1,
+                FixedAsync::Input,
             ) {
                 Ok(r) => {
                     info!(
@@ -710,13 +723,15 @@ impl StreamingDownsampler16k {
             (self.pending.len() * Self::TARGET_RATE as usize) / self.source_rate as usize + 1,
         );
         while self.pending.len() >= self.chunk {
-            let input = vec![self.pending.drain(..self.chunk).collect::<Vec<f32>>()];
-            match resampler.process(&input, None) {
-                Ok(mut waves) => {
-                    if let Some(wave) = waves.pop() {
-                        out.extend_from_slice(&wave);
-                    }
-                }
+            let input = self.pending.drain(..self.chunk).collect::<Vec<f32>>();
+            let Ok(adapter) = InterleavedSlice::new(&input, 1, self.chunk) else {
+                // Only fails on a length mismatch, which the drain above rules
+                // out; skip the chunk rather than kill the transcript.
+                warn!("Live downsampling: could not wrap a {} sample chunk", self.chunk);
+                continue;
+            };
+            match resampler.process(&adapter, None) {
+                Ok(wave) => out.extend_from_slice(&wave.take_data()),
                 // Losing one chunk is survivable; ending the transcript is not.
                 Err(e) => warn!("Live downsampling failed for one chunk: {e}"),
             }
@@ -861,6 +876,112 @@ pub fn write_transcript_json_to_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- resampling characterisation helpers -------------------------------
+    //
+    // These exist because the resampler has no observable output other than the
+    // audio itself: a wrong filter still returns plausible-looking f32s, and the
+    // symptom is a model mishearing words rather than an error. They pin the
+    // three properties that matter — length, amplitude, and that the tone comes
+    // out at the frequency it went in — so a resampler swap has to preserve
+    // behaviour instead of merely compiling.
+
+    /// Generate `secs` of a pure sine at `freq` Hz, sampled at `rate`.
+    fn sine(freq: f32, rate: u32, secs: f32) -> Vec<f32> {
+        let n = (rate as f32 * secs) as usize;
+        (0..n)
+            .map(|i| {
+                (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin()
+            })
+            .collect()
+    }
+
+    /// Estimate the dominant frequency by counting zero crossings. Exact enough
+    /// for a single clean tone, and needs no FFT plumbing in the test.
+    fn dominant_freq(samples: &[f32], rate: u32) -> f32 {
+        // Ignore the filter's edge transient at both ends.
+        let skip = (samples.len() / 10).max(1);
+        let body = &samples[skip..samples.len().saturating_sub(skip)];
+        if body.len() < 2 {
+            return 0.0;
+        }
+        let crossings = body
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        crossings as f32 * rate as f32 / (2.0 * body.len() as f32)
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    /// One-shot 48k->16k must keep a 1kHz tone at 1kHz and at full amplitude,
+    /// and emit ~1/3 as many samples. Measured on rubato 0.15: 15914 samples,
+    /// peak 0.9954, 1000.3Hz.
+    #[test]
+    fn test_resample_48k_to_16k_preserves_tone() {
+        let input = sine(1000.0, 48_000, 1.0);
+        let out = resample(&input, 48_000, 16_000).unwrap();
+
+        let expected = input.len() / 3;
+        assert!(
+            (out.len() as i64 - expected as i64).abs() < (expected / 20) as i64,
+            "expected ~{expected} samples, got {}",
+            out.len()
+        );
+        let p = peak(&out);
+        assert!(p > 0.95 && p <= 1.01, "amplitude not preserved: peak {p}");
+        let f = dominant_freq(&out, 16_000);
+        assert!((f - 1000.0).abs() < 20.0, "tone shifted to {f}Hz");
+    }
+
+    /// Same guarantees through the streaming path, fed in blocks that do not
+    /// divide the resampler chunk size, so a boundary that drops or duplicates
+    /// samples shows up as a length or frequency error.
+    #[test]
+    fn test_streaming_downsampler_preserves_tone_across_chunks() {
+        let input = sine(1000.0, 48_000, 1.0);
+        let mut ds = StreamingDownsampler16k::new(48_000);
+        let mut out = Vec::new();
+        for block in input.chunks(1024) {
+            out.extend_from_slice(&ds.push(block));
+        }
+
+        let expected = input.len() / 3;
+        assert!(
+            (out.len() as i64 - expected as i64).abs() < (expected / 20) as i64,
+            "expected ~{expected} samples, got {}",
+            out.len()
+        );
+        let p = peak(&out);
+        assert!(p > 0.95 && p <= 1.01, "amplitude not preserved: peak {p}");
+        let f = dominant_freq(&out, 16_000);
+        assert!((f - 1000.0).abs() < 20.0, "tone shifted to {f}Hz");
+    }
+
+    /// The one that actually guards transcription quality. 12kHz is above the
+    /// 8kHz Nyquist of 16k output, so it must be filtered away, not folded back
+    /// on top of speech. A decimator with no anti-alias filter leaves it near
+    /// 1.0, aliased down to ~4kHz — audible to the model as garbled words
+    /// rather than as an error.
+    ///
+    /// Measured: 0.073 on rubato 0.15, 0.159 on rubato 5 with identical
+    /// parameters. rubato 5 rejects ~6dB less here; the threshold is set above
+    /// both so it still catches a real aliasing regression. Lowering f_cutoff
+    /// does not buy the rejection back (0.80 only reached 0.133) and costs the
+    /// speech band dearly — 7kHz fell from 1.01 to 0.40 — so f_cutoff stays at
+    /// the historical 0.95.
+    #[test]
+    fn test_resample_rejects_above_nyquist_instead_of_aliasing() {
+        let input = sine(12_000.0, 48_000, 1.0);
+        let out = resample(&input, 48_000, 16_000).unwrap();
+        let p = peak(&out);
+        assert!(
+            p < 0.25,
+            "12kHz survived downsampling at peak {p}; it is aliasing into the speech band"
+        );
+    }
 
     /// Regression: the gain came straight from `TARGET_LUFS - loudness_global()`
     /// with no bound. At the start of a recording that measurement is room

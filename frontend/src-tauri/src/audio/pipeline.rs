@@ -6,7 +6,10 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use crate::batch_audio_metric;
 use super::batch_processor::AudioMetricsBatcher;
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+// See audio_processing.rs for why rubato 5 needs Async/FixedAsync and an
+// audioadapter buffer instead of SincFixedIn and Vec<Vec<f32>>.
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
@@ -315,7 +318,7 @@ pub struct AudioCapture {
     device_type: DeviceType,
     needs_resampling: bool,  // Flag if resampling is required
     // CRITICAL FIX: Persistent resampler to preserve energy across chunks
-    resampler: Arc<std::sync::Mutex<Option<SincFixedIn<f32>>>>,
+    resampler: Arc<std::sync::Mutex<Option<Async<f32>>>>,
     // Buffering for variable-size chunks → fixed-size resampler input
     resampler_input_buffer: Arc<std::sync::Mutex<Vec<f32>>>,
     resampler_chunk_size: usize,  // Fixed chunk size for resampler (512 samples)
@@ -463,18 +466,19 @@ impl AudioCapture {
             // deliver at half its rate. 64 taps is transparent for speech.
             let params = SincInterpolationParameters {
                 sinc_len: 64,
-                f_cutoff: 0.95,
+                f_cutoff: Some(0.95),
                 interpolation: SincInterpolationType::Linear,
                 oversampling_factor: 128,
                 window: WindowFunction::BlackmanHarris2,
             };
 
-            match SincFixedIn::<f32>::new(
+            match Async::<f32>::new_sinc(
                 ratio,
                 2.0,  // Maximum relative deviation
-                params,
+                &params,
                 RESAMPLER_CHUNK_SIZE,
                 1,    // Mono
+                FixedAsync::Input,
             ) {
                 Ok(resampler) => {
                     info!("✅ Persistent resampler initialized for '{}' ({}Hz → {}Hz, chunk_size={})",
@@ -600,14 +604,20 @@ impl AudioCapture {
                             // Extract exactly chunk_size samples
                             let chunk: Vec<f32> = buffer_lock.drain(0..self.resampler_chunk_size).collect();
 
-                            // Rubato expects input as Vec<Vec<f32>> (one Vec per channel)
-                            let waves_in = vec![chunk];
+                            // Mono, so the chunk is already the interleaved
+                            // layout the adapter wants — no per-call Vec<Vec<_>>.
+                            let waves_in = match InterleavedSlice::new(&chunk, 1, self.resampler_chunk_size) {
+                                Ok(adapter) => adapter,
+                                Err(e) => {
+                                    warn!("⚠️ Persistent resampler could not wrap input: {}", e);
+                                    used_persistent_resampler = false;
+                                    break;
+                                }
+                            };
 
                             match resampler.process(&waves_in, None) {
-                                Ok(mut waves_out) => {
-                                    if let Some(output) = waves_out.pop() {
-                                        resampled_output.extend_from_slice(&output);
-                                    }
+                                Ok(waves_out) => {
+                                    resampled_output.extend_from_slice(&waves_out.take_data());
                                 }
                                 Err(e) => {
                                     warn!("⚠️ Persistent resampler processing failed: {}", e);

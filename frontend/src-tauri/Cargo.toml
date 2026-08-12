@@ -53,8 +53,8 @@ openmp = ["transcribe-cpp/openmp"] # OpenMP parallel processing
 
 [build-dependencies]
 tauri-build = { version = "2.3.0", features = [] }
-reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
-which = "6.0.1"
+reqwest = { version = "0.13", features = ["blocking", "multipart", "json", "stream"] }
+which = "8.0"
 zip = "2.2"           # ZIP extraction (Windows, macOS)
 tar = "0.4"           # TAR extraction (Linux)
 xz2 = "0.1"           # XZ decompression (Linux)
@@ -74,9 +74,6 @@ cpal = "0.15.3"
 # Wav encoding - now using manual WAV creation instead of hound
 # hound = "3.5"
 
-# Cli ! shouldn't be required if using as lib
-clap = { version = "4.3", features = ["derive"] }
-
 # Dates
 chrono = { version = "0.4.31", features = ["serde"] }
 
@@ -84,7 +81,7 @@ chrono = { version = "0.4.31", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
 tracing = "0.1.40"
-which = "6.0.1"
+which = "8.0"
 
 # Bytes
 bytemuck = "1.16.1"
@@ -101,43 +98,29 @@ nnnoiseless = "0.5"
 futures-util = "0.3"
 silero_rs = { git = "https://github.com/emotechlab/silero-rs", rev = "26a6460", package = "silero" }
 
-thiserror = "2.0.16"
-
 # Async
 tokio = { version = "1.32.0", features = ["full", "tracing"] }
 tokio-util = "0.7"  # Utilities for tokio including CancellationToken
-async-trait = "0.1"  # Trait abstraction for async methods
 
-reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
-
-# crossbeam
-crossbeam = "0.8.4"
-dashmap = "6.1.0"
+reqwest = { version = "0.13", features = ["blocking", "multipart", "json", "stream"] }
 
 # Directories
-dirs = "5.0.1"
-
-# Additional dependencies for notification system
-url = "2.5.0"
+dirs = "6.0"
 
 
 lazy_static = { version = "1.4.0" }
 realfft = "3.4.0"
 regex = "1.11.0"
-bytes = { version = "1.9.0", features = ["serde"] }
-
-esaxx-rs = "0.1.10"
-symphonia = { version = "0.5.4", features = ["aac", "isomp4", "mp3", "flac", "ogg", "vorbis", "pcm", "wav", "opt-simd"] }
-rand = "0.8.5"
+symphonia = { version = "0.6", features = ["aac", "isomp4", "mp3", "flac", "ogg", "vorbis", "pcm", "wav", "opt-simd"] }
 rayon = "1.10"
-rubato = "0.15.0"
-ringbuf = "0.4.8"
+rubato = "5.0"
+ringbuf = "0.5"
 tempfile = "3.3.0"
 whatlang = "0.16.4"
 
 ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", branch = "main" }
 
-sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "chrono"] }
+sqlx = { version = "0.9", features = [ "runtime-tokio", "sqlite", "chrono"] }
 
 # Common Tauri configuration
 tauri = { version = "2.6.2", features = [ "macos-private-api", "protocol-asset", "tray-icon"] }
@@ -156,14 +139,11 @@ tauri-plugin-single-instance = "=2.3.7"
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri = { version = "2.6.2", features = ["protocol-asset", "macos-private-api", "tray-icon"] }
 once_cell = "1.17.1"
-objc = "0.2.7"
 tauri-plugin-log = { version = "2.6.0", features = ["colored"] }
 anyhow = "1.0"
 time = { version = "0.3", features = ["formatting"] }
-reqwest = { version = "0.11", features = ["multipart", "json"] }
-core-graphics = "0.23"
+reqwest = { version = "0.13", features = ["multipart", "json"] }
 cidre = { git = "https://github.com/yury/cidre", rev = "a9587fa", features = ["av"] }
-dasp = "0.11.0"
 futures-channel = "0.3.31"
 
 # transcribe.cpp — replaces whisper-rs + ort. `metal` is its default feature.
@@ -198,13 +178,8 @@ transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev
 
 [dev-dependencies]
 tempfile = "3.3.0"
-infer = "0.15"
-criterion = { version = "0.5.1", features = ["async_tokio"] }
-memory-stats = "1.0"
-strsim = "0.10.0"
-futures = "0.3.31"
-tracing-subscriber = "0.3.16"
 
-[patch.crates-io]
-cpal = { git = "https://github.com/RustAudio/cpal", rev = "51c3b43" }
-esaxx-rs = { git = "https://github.com/thewh1teagle/esaxx-rs.git", branch = "feat/dynamic-msvc-link" }
+# NOTE: this file used to carry a [patch.crates-io] for cpal and esaxx-rs.
+# Cargo ignores [patch] outside the workspace root, so it never applied and
+# every build resolved both from the registry. It was dropped rather than
+# hoisted — see the workspace root Cargo.toml for why. Do not re-add it here.

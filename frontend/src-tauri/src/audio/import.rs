@@ -192,10 +192,11 @@ pub fn validate_audio_file(path: &Path) -> Result<AudioFileInfo> {
 /// Extract duration from audio file metadata without full decode
 /// Returns error if metadata is unavailable, triggering fallback to full decode
 fn extract_duration_from_metadata(path: &Path) -> Result<f64> {
+    use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::formats::probe::Hint;
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     // Open the file
     let file = std::fs::File::open(path)
@@ -209,35 +210,36 @@ fn extract_duration_from_metadata(path: &Path) -> Result<f64> {
         hint.with_extension(ext);
     }
 
-    // Probe the file format (lightweight operation)
-    let probed = symphonia::default::get_probe()
-        .format(
+    // Probe the file format (lightweight operation). 0.6 returns the
+    // FormatReader directly and takes the options by value.
+    let format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
 
-    let format = probed.format;
-
     // Find the first audio track
-    use symphonia::core::codecs::CODEC_TYPE_NULL;
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .find(|t| t.codec_params.as_ref().is_some_and(CodecParameters::is_audio))
         .ok_or_else(|| anyhow!("No audio track found in file"))?;
 
+    let Some(CodecParameters::Audio(audio_params)) = track.codec_params.as_ref() else {
+        return Err(anyhow!("No audio track found in file"));
+    };
+
     // Extract duration from metadata
-    let sample_rate = track
-        .codec_params
+    let sample_rate = audio_params
         .sample_rate
         .ok_or_else(|| anyhow!("Unknown sample rate"))?;
 
+    // n_frames moved off codec_params onto the Track itself in 0.6.
     let n_frames = track
-        .codec_params
-        .n_frames
+        .num_frames
         .ok_or_else(|| anyhow!("Frame count not available in metadata"))?;
 
     let duration_seconds = n_frames as f64 / sample_rate as f64;
@@ -863,7 +865,7 @@ pub async fn validate_audio_file_command(path: String) -> Result<AudioFileInfo, 
     validate_audio_file(Path::new(&path)).map_err(|e| e.to_string())
 }
 
-/// Start importing an audio file (Beta gated using configContext.betaFeatures)
+/// Start importing an audio file
 #[tauri::command]
 pub async fn start_import_audio_command<R: Runtime>(
     app: AppHandle<R>,

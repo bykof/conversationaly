@@ -29,6 +29,14 @@ pub struct SaveTranscriptConfigRequest {
 /// `builtin-ai` the bundled sidecar. They used to be spelled `localWhisper` /
 /// `parakeet`, and missing them here made `api_get_transcript_config` fail for
 /// the *default* provider, which silently discarded the user's model choice.
+// sqlx 0.9 refuses a non-'static SQL string unless it is wrapped in
+// AssertSqlSafe, to force an injection audit. The format!-built queries in this
+// file only ever interpolate column names produced by closed `match` arms (this
+// helper, plus the inline matches in save/get/clear_api_key), each returning a
+// hardcoded &'static str or erroring on an unknown provider, alongside
+// &'static str consts from crate::config. No caller-controlled text reaches the
+// SQL, so the assertion is accurate rather than a silencer. Keep it that way:
+// any new arm must return a literal, never the caller's `provider` string.
 fn transcript_api_key_column(
     provider: &str,
 ) -> std::result::Result<Option<&'static str>, sqlx::Error> {
@@ -128,7 +136,7 @@ impl SettingsRepository {
             "#,
             api_key_column, api_key_column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        sqlx::query(sqlx::AssertSqlSafe(query)).bind(api_key).execute(pool).await?;
 
         Ok(())
     }
@@ -161,7 +169,7 @@ impl SettingsRepository {
             "SELECT {} FROM settings WHERE id = '1' LIMIT 1",
             api_key_column
         );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
+        let api_key = sqlx::query_scalar(sqlx::AssertSqlSafe(query)).fetch_optional(pool).await?;
         Ok(api_key)
     }
 
@@ -219,7 +227,7 @@ impl SettingsRepository {
             crate::config::DEFAULT_TRANSCRIBE_MODEL,
             api_key_column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        sqlx::query(sqlx::AssertSqlSafe(query)).bind(api_key).execute(pool).await?;
 
         Ok(())
     }
@@ -236,7 +244,7 @@ impl SettingsRepository {
             "SELECT {} FROM transcript_settings WHERE id = '1' LIMIT 1",
             api_key_column
         );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
+        let api_key = sqlx::query_scalar(sqlx::AssertSqlSafe(query)).fetch_optional(pool).await?;
         Ok(api_key)
     }
 
@@ -270,7 +278,7 @@ impl SettingsRepository {
             "UPDATE settings SET {} = NULL WHERE id = '1'",
             api_key_column
         );
-        sqlx::query(&query).execute(pool).await?;
+        sqlx::query(sqlx::AssertSqlSafe(query)).execute(pool).await?;
 
         Ok(())
     }

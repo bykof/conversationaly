@@ -8,7 +8,21 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # mtmd is not optional: audio input is the transcription path, not an extra.
-llama-cpp-2 = { version = "=0.1.146", features = ["mtmd"] }
+#
+# 0.1.154 (was 0.1.146). The mtmd Rust API is unchanged across that range —
+# same 33 public fns — and PROJECTOR_TYPE_GEMMA4A is still in the vendored
+# llama.cpp, so Gemma 4's audio conformer still decodes. The breaking changes
+# in between are image-only: MtmdBitmap::from_file/from_buffer gained a
+# `placeholder` argument, which this crate never calls (audio goes through
+# from_audio_data), and MtmdContextParams gained image_min_tokens /
+# image_max_tokens, which ..Default::default() below fills with the model
+# default. Keep both pins on the same version.
+llama-cpp-2 = { version = "=0.1.154", features = ["mtmd"] }
+# Pinned alongside the wrapper on purpose. llama-cpp-2's own `=` pin does NOT
+# constrain the sys crate, so a plain `cargo update` drifts the bindings out
+# from under the pinned safe wrapper (observed: 0.1.146 -> 0.1.154 while the
+# wrapper stayed at 0.1.146).
+llama-cpp-sys-2 = "=0.1.154"
 encoding_rs = "0.8"
 base64 = "0.22"
 
@@ -19,7 +33,6 @@ cuda = ["llama-cpp-2/cuda"]
 vulkan = ["llama-cpp-2/vulkan"]
 rocm = ["llama-cpp-2/rocm"]
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"  # Optimize for size for faster loading
+# NOTE: the release profile for this crate lives in the workspace root
+# Cargo.toml as [profile.release.package.llama-helper]. Cargo ignores
+# [profile] in a non-root manifest.

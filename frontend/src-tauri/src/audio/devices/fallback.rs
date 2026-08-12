@@ -51,7 +51,12 @@ use crate::audio::device_detection::InputDeviceKind;
 ///
 /// # Example
 ///
-/// ```rust
+/// Illustrative, not executable — `text` on purpose. Running it for real would
+/// need a macOS host with specific devices connected, and would open audio
+/// hardware during `cargo test`; as a ```rust block it only ever failed to
+/// compile (no import, and `?` outside a Result-returning fn).
+///
+/// ```text
 /// // When AirPods are default mic, built-in speaker is default output:
 /// let (mic, system) = get_safe_recording_devices_macos()?;
 ///
