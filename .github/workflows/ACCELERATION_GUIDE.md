@@ -51,7 +51,7 @@ args: --target x86_64-pc-windows-msvc --features vulkan
 - Compatible with GitHub Actions Windows runners
 
 **How it works:**
-- Vulkan SDK installed via `humbletim/install-vulkan-sdk@v1.2`
+- Vulkan SDK installed from the official LunarG installer
 - Whisper.cpp compiled with Vulkan backend
 - GPU automatically used for inference
 
@@ -311,8 +311,8 @@ error: failed to compile whisper-rs with Vulkan support
 
 **Solution:**
 - Ensure Vulkan SDK step runs successfully
-- Check `humbletim/install-vulkan-sdk@v1.2` output
-- Verify Vulkan version matches (1.4.309.0)
+- Check the "Install Vulkan SDK" step output
+- Verify Vulkan version matches (VULKAN_VERSION in the workflow)
 
 ### Build Fails with OpenBLAS Error (Linux)
 

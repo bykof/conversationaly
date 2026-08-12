@@ -49,6 +49,8 @@ jobs:
     permissions:
       contents: write
     runs-on: ${{ inputs.platform }}
+    env:
+      VULKAN_VERSION: 1.4.357.0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -133,10 +135,14 @@ jobs:
 
       - name: Install Vulkan SDK (Windows)
         if: contains(inputs.platform, 'windows')
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.309.0
-          cache: true
+        shell: pwsh
+        # The official installer, not humbletim/install-vulkan-sdk: that one 7z-extracts
+        # the installer and skips share/cmake, so ggml's find_package(SPIRV-Headers) fails.
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin"
 
       - name: Verify and Configure Vulkan SDK (Windows)
         if: contains(inputs.platform, 'windows')
@@ -203,8 +209,8 @@ jobs:
           $possiblePaths = @(
             "$vulkanSdk\Bin\vulkan-1.dll",
             "$vulkanSdk\runtime\x64\vulkan-1.dll",
-            "C:\VulkanSDK\1.4.309.0\Bin\vulkan-1.dll",
-            "C:\VulkanSDK\1.4.309.0\runtime\x64\vulkan-1.dll",
+            "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin\vulkan-1.dll",
+            "C:\VulkanSDK\${env:VULKAN_VERSION}\runtime\x64\vulkan-1.dll",
             "$env:ProgramFiles\VulkanSDK\Bin\vulkan-1.dll",
             "$env:SystemRoot\System32\vulkan-1.dll"
           )
@@ -455,11 +461,25 @@ jobs:
 
       - name: Verify certificate
         if: contains(inputs.platform, 'macos') && inputs.sign-binaries
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "CERT_ID=$CERT_ID" >> $GITHUB_ENV
           echo "Certificate imported: $CERT_ID"
+          # Exported here rather than on the Tauri step: the bundler reads them with
+          # var_os, so an empty value still switches on signing/notarization and fails.
+          {
+            echo "CERT_ID=$CERT_ID"
+            echo "APPLE_SIGNING_IDENTITY=$CERT_ID"
+            echo "APPLE_ID=$APPLE_ID"
+            echo "APPLE_ID_PASSWORD=$APPLE_ID_PASSWORD"
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+          } >> $GITHUB_ENV
 
       - name: Configure build acceleration
         if: contains(inputs.platform, 'macos')
@@ -571,13 +591,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ inputs.sign-binaries && secrets.APPLE_ID || '' }}
-          APPLE_ID_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_ID_PASSWORD || '' }}
-          APPLE_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ inputs.sign-binaries && secrets.APPLE_TEAM_ID || '' }}
-          APPLE_CERTIFICATE: ${{ inputs.sign-binaries && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ inputs.sign-binaries && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ inputs.sign-binaries && env.CERT_ID || '' }}
+          # APPLE_* come from the Verify certificate step via GITHUB_ENV, and only when
+          # signing: set-but-empty is indistinguishable from set to the bundler.
           # Tauri updater signing (ALWAYS enabled for .sig files)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

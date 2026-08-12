@@ -42,6 +42,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      VULKAN_VERSION: 1.4.357.0
 
     steps:
       - name: Checkout repository
@@ -507,10 +509,14 @@ jobs:
           key: windows-x64-vulkan-v2
 
       - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.309.0
-          cache: true
+        shell: pwsh
+        # The official installer, not humbletim/install-vulkan-sdk: that one 7z-extracts
+        # the installer and skips share/cmake, so ggml's find_package(SPIRV-Headers) fails.
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin"
 
       - name: Verify and Configure Vulkan SDK
         shell: pwsh
@@ -597,8 +603,8 @@ jobs:
           $possiblePaths = @(
             "$vulkanSdk\Bin\vulkan-1.dll",
             "$vulkanSdk\runtime\x64\vulkan-1.dll",
-            "C:\VulkanSDK\1.4.309.0\Bin\vulkan-1.dll",
-            "C:\VulkanSDK\1.4.309.0\runtime\x64\vulkan-1.dll",
+            "C:\VulkanSDK\${env:VULKAN_VERSION}\Bin\vulkan-1.dll",
+            "C:\VulkanSDK\${env:VULKAN_VERSION}\runtime\x64\vulkan-1.dll",
             "$env:ProgramFiles\VulkanSDK\Bin\vulkan-1.dll",
             "$env:SystemRoot\System32\vulkan-1.dll"
           )
