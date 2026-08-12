@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, SampleRate, StreamConfig};
+use cpal::{Sample, SampleFormat, StreamConfig};
 use serde::Serialize;
 
 use super::audio_processing::audio_to_mono;
@@ -141,7 +141,7 @@ impl AudioLevelMonitor {
         // Try input devices first
         if let Ok(input_devices) = host.input_devices() {
             for device in input_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = crate::audio::devices::device_name(&device) {
                     if name == device_name {
                         return Ok(device);
                     }
@@ -152,7 +152,7 @@ impl AudioLevelMonitor {
         // Try output devices
         if let Ok(output_devices) = host.output_devices() {
             for device in output_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = crate::audio::devices::device_name(&device) {
                     if name == device_name {
                         return Ok(device);
                     }
@@ -181,7 +181,7 @@ impl AudioLevelMonitor {
             return Err(anyhow::anyhow!("Failed to get any config for device: {}", device_name));
         };
 
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels();
         let sample_format = config.sample_format();
 
@@ -194,7 +194,7 @@ impl AudioLevelMonitor {
         // Create stream config
         let stream_config = StreamConfig {
             channels,
-            sample_rate: SampleRate(sample_rate),
+            sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -206,7 +206,7 @@ impl AudioLevelMonitor {
             SampleFormat::F32 => {
                 let stream = if is_input {
                     device.build_input_stream(
-                        &stream_config,
+                        stream_config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             process_audio_levels(
                                 data,
@@ -234,7 +234,7 @@ impl AudioLevelMonitor {
                 }
 
                 let stream = device.build_input_stream(
-                    &stream_config,
+                    stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data.iter().map(|&s| s.to_sample()).collect();
                         process_audio_levels(
@@ -258,7 +258,7 @@ impl AudioLevelMonitor {
                 }
 
                 let stream = device.build_input_stream(
-                    &stream_config,
+                    stream_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         let f32_data: Vec<f32> = data.iter().map(|&s| s.to_sample()).collect();
                         process_audio_levels(

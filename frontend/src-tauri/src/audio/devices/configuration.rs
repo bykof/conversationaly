@@ -107,6 +107,18 @@ pub fn parse_audio_device(name: &str) -> Result<AudioDevice> {
     AudioDevice::from_name(name)
 }
 
+/// The device's human-readable name.
+///
+/// Replaces `DeviceTrait::name()`, removed in cpal 0.18. cpal's own suggested
+/// replacement is `device.to_string()`, but its `Display` impl folds a failed
+/// `description()` into `fmt::Error`, which makes `to_string()` panic on a
+/// disconnected device. Devices get unplugged mid-meeting, so this keeps the
+/// fallible signature the old `name()` had and every call site keeps handling it.
+pub fn device_name(device: &cpal::Device) -> Result<String, cpal::Error> {
+    use cpal::traits::DeviceTrait;
+    device.description().map(|d| d.name().to_string())
+}
+
 /// Get device and config for audio operations
 pub async fn get_device_and_config(
     audio_device: &AudioDevice,
@@ -125,7 +137,7 @@ pub async fn get_device_and_config(
         match audio_device.device_type {
             DeviceType::Input => {
                 for device in host.input_devices()? {
-                    if let Ok(name) = device.name() {
+                    if let Ok(name) = device_name(&device) {
                         if name == audio_device.name {
                             let default_config = device
                                 .default_input_config()
@@ -141,7 +153,7 @@ pub async fn get_device_and_config(
                     // Use default host for all macOS output devices
                     // Core Audio backend uses direct cidre API for system capture, not cpal
                     for device in host.output_devices()? {
-                        if let Ok(name) = device.name() {
+                        if let Ok(name) = device_name(&device) {
                             if name == audio_device.name {
                                 let default_config = device
                                     .default_output_config()
@@ -157,7 +169,7 @@ pub async fn get_device_and_config(
                     // For Linux, we use PulseAudio monitor sources for system audio
                     if let Ok(pulse_host) = cpal::host_from_id(cpal::HostId::Alsa) {
                         for device in pulse_host.input_devices()? {
-                            if let Ok(name) = device.name() {
+                            if let Ok(name) = device_name(&device) {
                                 if name == audio_device.name {
                                     let default_config = device
                                         .default_input_config()

@@ -40,12 +40,12 @@ async fn get_macos_output() -> Result<AudioOutputInfo> {
     let device = host.default_output_device()
         .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
 
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+    let device_name = crate::audio::devices::device_name(&device).unwrap_or_else(|_| "Unknown".to_string());
 
     // Get sample rate
     let sample_rate = device.default_output_config()
         .ok()
-        .map(|config| config.sample_rate().0);
+        .map(|config| config.sample_rate());
 
     // Heuristic: Check if device name contains bluetooth-related keywords
     let name_lower = device_name.to_lowercase();
@@ -86,11 +86,11 @@ async fn get_windows_output() -> Result<AudioOutputInfo> {
     let device = host.default_output_device()
         .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
 
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+    let device_name = crate::audio::devices::device_name(&device).unwrap_or_else(|_| "Unknown".to_string());
 
     let sample_rate = device.default_output_config()
         .ok()
-        .map(|config| config.sample_rate().0);
+        .map(|config| config.sample_rate());
 
     // Windows Bluetooth detection
     let name_lower = device_name.to_lowercase();
@@ -125,11 +125,11 @@ async fn get_linux_output() -> Result<AudioOutputInfo> {
     let device = host.default_output_device()
         .ok_or_else(|| anyhow::anyhow!("No default output device found"))?;
 
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+    let device_name = crate::audio::devices::device_name(&device).unwrap_or_else(|_| "Unknown".to_string());
 
     let sample_rate = device.default_output_config()
         .ok()
-        .map(|config| config.sample_rate().0);
+        .map(|config| config.sample_rate());
 
     // Linux Bluetooth detection (PulseAudio/PipeWire naming)
     let name_lower = device_name.to_lowercase();

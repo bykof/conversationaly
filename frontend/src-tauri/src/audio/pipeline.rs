@@ -825,32 +825,36 @@ impl AudioCapture {
     }
 
     /// Handle stream errors with enhanced disconnect detection
-    pub fn handle_stream_error(&self, error: cpal::StreamError) {
-        error!("Audio stream error for {}: {}", self.device.name, error);
-
-        let error_str = error.to_string().to_lowercase();
-
-        // Enhanced error detection for device disconnection
-        let audio_error = if error_str.contains("device is no longer available")
-            || error_str.contains("device not found")
-            || error_str.contains("device disconnected")
-            || error_str.contains("no such device")
-            || error_str.contains("device unavailable")
-            || error_str.contains("device removed")
-        {
-            warn!("🔌 Device disconnect detected for: {}", self.device.name);
-            AudioError::DeviceDisconnected
-        } else if error_str.contains("permission") || error_str.contains("access denied") {
-            AudioError::PermissionDenied
-        } else if error_str.contains("channel closed") {
-            AudioError::ChannelClosed
-        } else if error_str.contains("stream") && error_str.contains("failed") {
-            AudioError::StreamFailed
-        } else {
-            warn!("Unknown audio error: {}", error);
-            AudioError::StreamFailed
+    ///
+    /// cpal 0.18 replaced the per-operation error enums with one typed `ErrorKind`,
+    /// so this matches on the kind rather than sniffing the Display text the way it
+    /// used to — 0.18 reworded those messages, which would have silently downgraded
+    /// every disconnect to a generic StreamFailed.
+    pub fn handle_stream_error(&self, error: cpal::Error) {
+        let audio_error = match error.kind() {
+            // Not a failure, and deliberately not reported. cpal 0.15 had no underrun
+            // callback at all, so this arrives only since 0.17; an xrun means a few
+            // samples were dropped. report_error() stops the recording after 10
+            // recoverable errors, so treating glitches as errors would end a long
+            // meeting on its own.
+            cpal::ErrorKind::Xrun => {
+                warn!("Audio buffer xrun on {} (samples dropped)", self.device.name);
+                return;
+            }
+            // StreamInvalidated means the stream must be rebuilt (a macOS sample-rate
+            // change, a JACK server restart). The reconnect path is the same one a
+            // disconnect takes.
+            cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::DeviceChanged
+            | cpal::ErrorKind::StreamInvalidated => {
+                warn!("🔌 Device disconnect detected for: {}", self.device.name);
+                AudioError::DeviceDisconnected
+            }
+            cpal::ErrorKind::PermissionDenied => AudioError::PermissionDenied,
+            _ => AudioError::StreamFailed,
         };
 
+        error!("Audio stream error for {}: {}", self.device.name, error);
         self.state.report_error(audio_error);
     }
 }

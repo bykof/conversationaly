@@ -2,7 +2,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use futures_util::{Stream, StreamExt};
 use anyhow::Result;
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::HostTrait;
+use crate::audio::devices::device_name;
 
 
 #[cfg(target_os = "macos")]
@@ -30,7 +31,7 @@ impl SystemAudioCapture {
 
         let mut device_names = Vec::new();
         for device in devices {
-            if let Ok(name) = device.name() {
+            if let Ok(name) = device_name(&device) {
                 device_names.push(name);
             }
         }

@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use cpal::traits::{HostTrait, DeviceTrait};
+use cpal::traits::HostTrait;
 use log::{info, warn};
 
-use super::configuration::{AudioDevice, DeviceType};
+use super::configuration::{device_name, AudioDevice, DeviceType};
 
 /// Get the default input (microphone) device for the system
 pub fn default_input_device() -> Result<AudioDevice> {
@@ -10,7 +10,7 @@ pub fn default_input_device() -> Result<AudioDevice> {
     let device = host
         .default_input_device()
         .ok_or_else(|| anyhow!("No default input device found"))?;
-    Ok(AudioDevice::new(device.name()?, DeviceType::Input))
+    Ok(AudioDevice::new(device_name(&device)?, DeviceType::Input))
 }
 
 /// Find the built-in microphone device (wired, stable, consistent sample rate)
@@ -42,7 +42,7 @@ pub fn find_builtin_input_device() -> Result<Option<AudioDevice>> {
 
     // Search all input devices for built-in pattern matches
     for device in host.input_devices()? {
-        if let Ok(name) = device.name() {
+        if let Ok(name) = device_name(&device) {
             let name_lower = name.to_lowercase();
 
             // Check if this is a built-in device

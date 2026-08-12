@@ -27,7 +27,7 @@ pub fn log_device_capabilities(
     detected_kind: InputDeviceKind,
 ) {
     // Calculate various metrics
-    let sample_rate = config.sample_rate().0;
+    let sample_rate = config.sample_rate();
     let channels = config.channels();
     let buffer_size_enum = config.buffer_size();
     let sample_format = config.sample_format();

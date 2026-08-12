@@ -111,13 +111,13 @@ impl AudioStream {
         let (cpal_device, config) = get_device_and_config(&device).await?;
 
         info!("Audio config - Sample rate: {}, Channels: {}, Format: {:?}",
-              config.sample_rate().0, config.channels(), config.sample_format());
+              config.sample_rate(), config.channels(), config.sample_format());
 
         // Create audio capture processor
         let capture = AudioCapture::new(
             device.clone(),
             state.clone(),
-            config.sample_rate().0,
+            config.sample_rate(),
             config.channels(),
             device_type,
         );
@@ -206,81 +206,74 @@ impl AudioStream {
     }
 
     /// Build stream based on sample format
+    ///
+    /// The integer formats all convert through `f32::from_sample`, so they share one
+    /// generic builder. Which of them can actually turn up widened in cpal 0.18:
+    /// `default_input_config()` now ranks I32 > I24 > I16, and I24 only became a
+    /// representable format in 0.17. A 24-bit interface with no F32 mode used to
+    /// hand us I16 and now hands us I24, which the old per-format match would have
+    /// rejected outright with "Unsupported sample format" — i.e. no recording at all.
     fn build_stream(
         device: &Device,
         config: &SupportedStreamConfig,
         capture: AudioCapture,
     ) -> Result<Stream> {
-        let config_copy = config.clone();
+        let stream_config: cpal::StreamConfig = (*config).into();
 
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => {
-                let capture_clone = capture.clone();
-                device.build_input_stream(
-                    &config_copy.into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        capture.process_audio_data(data);
-                    },
-                    move |err| {
-                        capture_clone.handle_stream_error(err);
-                    },
-                    None,
-                )?
-            }
-            cpal::SampleFormat::I16 => {
-                let capture_clone = capture.clone();
-                device.build_input_stream(
-                    &config_copy.into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i16::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
-                    },
-                    move |err| {
-                        capture_clone.handle_stream_error(err);
-                    },
-                    None,
-                )?
-            }
-            cpal::SampleFormat::I32 => {
-                let capture_clone = capture.clone();
-                device.build_input_stream(
-                    &config_copy.into(),
-                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i32::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
-                    },
-                    move |err| {
-                        capture_clone.handle_stream_error(err);
-                    },
-                    None,
-                )?
-            }
-            cpal::SampleFormat::I8 => {
-                let capture_clone = capture.clone();
-                device.build_input_stream(
-                    &config_copy.into(),
-                    move |data: &[i8], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i8::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
-                    },
-                    move |err| {
-                        capture_clone.handle_stream_error(err);
-                    },
-                    None,
-                )?
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unsupported sample format: {:?}", config.sample_format()));
-            }
-        };
+        // F32 is kept separate on purpose: it is the common case and hands the
+        // callback's slice straight to the pipeline with no per-chunk allocation.
+        if config.sample_format() == cpal::SampleFormat::F32 {
+            let capture_clone = capture.clone();
+            return Ok(device.build_input_stream(
+                stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    capture.process_audio_data(data);
+                },
+                move |err| {
+                    capture_clone.handle_stream_error(err);
+                },
+                None,
+            )?);
+        }
 
-        Ok(stream)
+        fn build_converting<T>(
+            device: &Device,
+            config: cpal::StreamConfig,
+            capture: AudioCapture,
+        ) -> Result<Stream>
+        where
+            T: cpal::SizedSample,
+            f32: cpal::FromSample<T>,
+        {
+            // `from_sample` is on Sample; FromSample only carries the raw `from_sample_`.
+            use cpal::Sample;
+            let capture_clone = capture.clone();
+            Ok(device.build_input_stream(
+                config,
+                move |data: &[T], _: &cpal::InputCallbackInfo| {
+                    let f32_data: Vec<f32> =
+                        data.iter().map(|&s| f32::from_sample(s)).collect();
+                    capture.process_audio_data(&f32_data);
+                },
+                move |err| {
+                    capture_clone.handle_stream_error(err);
+                },
+                None,
+            )?)
+        }
+
+        match config.sample_format() {
+            cpal::SampleFormat::F64 => build_converting::<f64>(device, stream_config, capture),
+            cpal::SampleFormat::I32 => build_converting::<i32>(device, stream_config, capture),
+            cpal::SampleFormat::I24 => build_converting::<cpal::I24>(device, stream_config, capture),
+            cpal::SampleFormat::I16 => build_converting::<i16>(device, stream_config, capture),
+            cpal::SampleFormat::I8 => build_converting::<i8>(device, stream_config, capture),
+            cpal::SampleFormat::U32 => build_converting::<u32>(device, stream_config, capture),
+            cpal::SampleFormat::U24 => build_converting::<cpal::U24>(device, stream_config, capture),
+            cpal::SampleFormat::U16 => build_converting::<u16>(device, stream_config, capture),
+            cpal::SampleFormat::U8 => build_converting::<u8>(device, stream_config, capture),
+            other => Err(anyhow::anyhow!("Unsupported sample format: {:?}", other)),
+        }
     }
 
     /// Get device info
@@ -450,5 +443,66 @@ impl Drop for AudioStreamManager {
         if let Err(e) = self.stop_streams() {
             error!("Error stopping streams during drop: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::traits::HostTrait;
+
+    /// End-to-end check of the cpal 0.18 migration against real hardware.
+    ///
+    /// Ignored by default: it needs an input device and microphone permission, so it
+    /// cannot run in CI. Run it on each platform after touching the cpal version:
+    /// `cargo test -p conversationaly --lib cpal_capture -- --ignored --nocapture`
+    ///
+    /// Everything here is something the compiler could not have caught. Device names
+    /// now come from `description()` rather than the removed `name()`; enumeration and
+    /// lookup have to agree on them or `get_device_and_config` silently finds nothing.
+    /// Streams no longer auto-start on CoreAudio/ALSA/JACK, so a missing `play()` shows
+    /// up as a stream that builds fine and delivers no audio.
+    #[tokio::test]
+    #[ignore]
+    async fn cpal_capture_round_trip() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let device = super::super::devices::default_input_device()
+            .expect("no default input device");
+        assert!(!device.name.is_empty(), "device name came back empty");
+        println!("default input: {}", device.name);
+
+        // The name enumeration produced must find the device again.
+        let (cpal_device, config) = super::super::devices::get_device_and_config(&device)
+            .await
+            .expect("default input device did not round-trip through its own name");
+        println!(
+            "config: {} Hz, {} ch, {:?}",
+            config.sample_rate(),
+            config.channels(),
+            config.sample_format()
+        );
+
+        // Callbacks must actually fire, which is what play() buys us now.
+        let frames = Arc::new(AtomicUsize::new(0));
+        let counter = frames.clone();
+        let stream = cpal_device
+            .build_input_stream(
+                config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    counter.fetch_add(data.len(), Ordering::Relaxed);
+                },
+                |err| panic!("stream error: {err}"),
+                None,
+            )
+            .expect("failed to build input stream");
+        stream.play().expect("failed to play stream");
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        drop(stream);
+
+        let captured = frames.load(Ordering::Relaxed);
+        println!("captured {captured} samples in 500ms");
+        assert!(captured > 0, "stream produced no samples in 500ms");
     }
 }

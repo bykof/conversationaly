@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait};
 use log::{debug, info, warn};
 
-use crate::audio::devices::configuration::{AudioDevice, DeviceType};
+use crate::audio::devices::configuration::{device_name, AudioDevice, DeviceType};
 
 /// Configure Windows audio devices using WASAPI
 pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
@@ -15,7 +15,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
         // Add output devices (including loopback)
         if let Ok(output_devices) = wasapi_host.output_devices() {
             for device in output_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     // For Windows, we need to mark output devices specifically for loopback
                     // info!("Found Windows output device: {}", name);
                     devices.push(AudioDevice::new(name.clone(), DeviceType::Output));
@@ -28,7 +28,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
         // Add input devices from WASAPI
         if let Ok(input_devices) = wasapi_host.input_devices() {
             for device in input_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     // info!("Found Windows input device: {}", name);
                     devices.push(AudioDevice::new(name.clone(), DeviceType::Input));
                 }
@@ -46,7 +46,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
         // Add regular input devices
         if let Ok(input_devices) = host.input_devices() {
             for device in input_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     // info!("Found fallback input device: {}", name);
                     devices.push(AudioDevice::new(name.clone(), DeviceType::Input));
                 }
@@ -58,7 +58,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
         // Add output devices
         if let Ok(output_devices) = host.output_devices() {
             for device in output_devices {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     // info!("Found fallback output device: {}", name);
                     devices.push(AudioDevice::new(name.clone(), DeviceType::Output));
                 }
@@ -74,7 +74,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
 
         // Try to add default input device
         if let Some(device) = host.default_input_device() {
-            if let Ok(name) = device.name() {
+            if let Ok(name) = device_name(&device) {
                 // info!("Adding default input device: {}", name);
                 devices.push(AudioDevice::new(name, DeviceType::Input));
             }
@@ -82,7 +82,7 @@ pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
 
         // Try to add default output device
         if let Some(device) = host.default_output_device() {
-            if let Ok(name) = device.name() {
+            if let Ok(name) = device_name(&device) {
                 // info!("Adding default output device: {}", name);
                 devices.push(AudioDevice::new(name, DeviceType::Output));
             }
@@ -112,7 +112,7 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
     match audio_device.device_type {
         DeviceType::Input => {
             for device in wasapi_host.input_devices()? {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     info!("Checking input device: {}", name);
                     // Check if the device name contains our base name
                     if name == base_name || name.contains(base_name) {
@@ -172,7 +172,7 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
             // If we didn't find a matching device, try the default input device as fallback
             info!("No matching input device found, trying default input device");
             if let Some(default_device) = wasapi_host.default_input_device() {
-                if let Ok(_name) = default_device.name() {
+                if let Ok(_name) = device_name(&default_device) {
                     // info!("Using default input device: {}", _name);
                     if let Ok(config) = default_device.default_input_config() {
                         return Ok((default_device, config));
@@ -186,7 +186,7 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
         }
         DeviceType::Output => {
             for device in wasapi_host.output_devices()? {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     info!("Checking output device: {}", name);
                     // Check if the device name contains our base name
                     if name == base_name || name.contains(base_name) {
@@ -239,7 +239,7 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
             // If we didn't find a matching device, try the default output device as fallback
             info!("No matching output device found, trying default output device");
             if let Some(default_device) = wasapi_host.default_output_device() {
-                if let Ok(name) = default_device.name() {
+                if let Ok(name) = device_name(&default_device) {
                     info!("Using default output device: {}", name);
                     if let Ok(config) = default_device.default_output_config() {
                         return Ok((default_device, config));

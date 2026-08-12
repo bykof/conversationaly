@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use cpal::traits::{HostTrait, DeviceTrait};
+use cpal::traits::HostTrait;
 use log::{info, warn};
 
-use super::configuration::{AudioDevice, DeviceType};
+use super::configuration::{device_name, AudioDevice, DeviceType};
 
 /// Get the default output (speaker/system audio) device for the system
 pub fn default_output_device() -> Result<AudioDevice> {
@@ -14,7 +14,7 @@ pub fn default_output_device() -> Result<AudioDevice> {
         let device = host
             .default_output_device()
             .ok_or_else(|| anyhow!("No default output device found"))?;
-        return Ok(AudioDevice::new(device.name()?, DeviceType::Output));
+        return Ok(AudioDevice::new(device_name(&device)?, DeviceType::Output));
     }
 
     #[cfg(target_os = "windows")]
@@ -22,7 +22,7 @@ pub fn default_output_device() -> Result<AudioDevice> {
         // Try WASAPI host first for Windows
         if let Ok(wasapi_host) = cpal::host_from_id(cpal::HostId::Wasapi) {
             if let Some(device) = wasapi_host.default_output_device() {
-                if let Ok(name) = device.name() {
+                if let Ok(name) = device_name(&device) {
                     return Ok(AudioDevice::new(name, DeviceType::Output));
                 }
             }
@@ -32,7 +32,7 @@ pub fn default_output_device() -> Result<AudioDevice> {
         let device = host
             .default_output_device()
             .ok_or_else(|| anyhow!("No default output device found"))?;
-        return Ok(AudioDevice::new(device.name()?, DeviceType::Output));
+        return Ok(AudioDevice::new(device_name(&device)?, DeviceType::Output));
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -41,7 +41,7 @@ pub fn default_output_device() -> Result<AudioDevice> {
         let device = host
             .default_output_device()
             .ok_or_else(|| anyhow!("No default output device found"))?;
-        return Ok(AudioDevice::new(device.name()?, DeviceType::Output));
+        return Ok(AudioDevice::new(device_name(&device)?, DeviceType::Output));
     }
 }
 
@@ -81,7 +81,7 @@ pub fn find_builtin_output_device() -> Result<Option<AudioDevice>> {
 
     // Search all output devices for built-in pattern matches
     for device in host.output_devices()? {
-        if let Ok(name) = device.name() {
+        if let Ok(name) = device_name(&device) {
             let name_lower = name.to_lowercase();
 
             // Check if this is a built-in device
