@@ -30,6 +30,15 @@ tokio = { version = "1.32.0", features = ["full"] }
 # pinned git rev would swap the audio capture backend for one no shipped build
 # has ever run. Both patches are dropped rather than revived.
 
+# Cargo.lock pins windows-core to 0.61.2 on purpose — do not `cargo update` it
+# away. cpal 0.18.1 declares `windows` and `windows-core` as two independent
+# ranges (`>=0.61, <=0.62`), so cargo is free to pick a mismatched pair. It did:
+# `windows` unified to 0.61.3 (tauri's ^0.61) while `windows-core` went to the
+# highest allowed, 0.62.2. `#[windows::core::implement]` then emits 0.62 paths
+# against 0.61 types and cpal fails to compile with 18 errors — Windows only,
+# which is why release 1.0.2 built on macOS and died on windows-latest.
+# Check after touching this: cargo check -p cpal --target x86_64-pc-windows-msvc
+
 # Profiles are root-only too. llama-helper declared these locally and cargo
 # ignored them. They are applied per-package here on purpose: opt-level = "s"
 # is what the sidecar wanted for load time, and hoisting it to the whole
