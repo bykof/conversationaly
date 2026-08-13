@@ -1,6 +1,6 @@
 [package]
 name = "conversationaly"
-version = "1.0.2"
+version = "1.0.3"
 description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
