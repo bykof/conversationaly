@@ -79,6 +79,27 @@ export function PreferenceSettings() {
     handleUpdateNotificationSettings();
   }, [notificationsEnabled, notificationSettings, isInitialLoad, previousNotificationsEnabled, updateNotificationSettings])
 
+  // Written straight through rather than mirrored in local state — there is no
+  // second preference to keep it in sync with.
+  const callNudgeEnabled =
+    notificationSettings?.notification_preferences.show_call_detected ?? true;
+
+  const handleCallNudgeChange = async (enabled: boolean) => {
+    if (!notificationSettings) return;
+
+    try {
+      await updateNotificationSettings({
+        ...notificationSettings,
+        notification_preferences: {
+          ...notificationSettings.notification_preferences,
+          show_call_detected: enabled,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to update call nudge setting:', error);
+    }
+  };
+
   const handleOpenFolder = async (folderType: 'database' | 'models' | 'recordings') => {
     try {
       switch (folderType) {
@@ -131,6 +152,22 @@ export function PreferenceSettings() {
           checked={notificationsEnabledValue}
           onCheckedChange={setNotificationsEnabled}
           aria-label="Recording notifications"
+        />
+      </section>
+
+      <section className="flex flex-wrap items-center justify-between gap-3 py-6">
+        <div>
+          <h2 className="text-base font-medium text-ink">Offer to record on calls</h2>
+          <p className="mt-0.5 max-w-[54ch] text-sm text-ink-muted">
+            When something starts using your microphone and nothing is
+            recording, show a small window offering to start. It will not
+            appear over a call that is full screen on its own desktop.
+          </p>
+        </div>
+        <Switch
+          checked={callNudgeEnabled}
+          onCheckedChange={handleCallNudgeChange}
+          aria-label="Offer to record when a meeting app launches"
         />
       </section>
 

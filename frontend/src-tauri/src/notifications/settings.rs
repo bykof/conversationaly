@@ -58,6 +58,11 @@ pub struct NotificationPreferences {
     /// Show system error notifications
     pub show_system_errors: bool,
 
+    /// Offer to start recording when a meeting app launches.
+    /// `serde(default)` so settings files written before this existed still parse.
+    #[serde(default = "default_true")]
+    pub show_call_detected: bool,
+
     /// Minutes before meeting to show reminder (0 = disabled)
     pub meeting_reminder_minutes: Vec<u64>,
 }
@@ -88,9 +93,14 @@ impl Default for NotificationPreferences {
             show_transcription_complete: true,
             show_meeting_reminders: true,
             show_system_errors: true,
+            show_call_detected: true,
             meeting_reminder_minutes: vec![15, 5], // 15 minutes and 5 minutes before
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Manages notification consent and user preferences

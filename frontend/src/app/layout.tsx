@@ -11,6 +11,7 @@ import { toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { AppToaster } from '@/components/AppToaster'
 import { useState, useEffect, useCallback } from 'react'
+import { usePathname } from 'next/navigation'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -83,11 +84,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 // export { metadata } from './metadata'
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+function AppRoot({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
 
@@ -239,13 +236,8 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${fontVars} font-sans`}>
-        {/* Resolves the theme before first paint — no flash of the wrong one. */}
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
-        {/* Same trick for dragged pane widths — no flash of the default rail. */}
-        <script dangerouslySetInnerHTML={{ __html: PANES_INIT_SCRIPT }} />
-        <RecordingStateProvider>
+    <>
+      <RecordingStateProvider>
           <TranscriptProvider>
             <ConfigProvider>
               <OllamaDownloadProvider>
@@ -283,7 +275,32 @@ export default function RootLayout({
           </TranscriptProvider>
         </RecordingStateProvider>
 
-        <AppToaster />
+      <AppToaster />
+    </>
+  )
+}
+
+/**
+ * The nudge window renders a 360px card, not the app — it must not mount the
+ * sidebar, the onboarding check, or any provider that assumes the main window.
+ * Route groups would give the same isolation at the cost of moving every
+ * existing route under a second root layout; this is one conditional.
+ */
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const pathname = usePathname()
+
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <body className={`${fontVars} font-sans`}>
+        {/* Resolves the theme before first paint — no flash of the wrong one. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Same trick for dragged pane widths — no flash of the default rail. */}
+        <script dangerouslySetInnerHTML={{ __html: PANES_INIT_SCRIPT }} />
+        {pathname === '/nudge' ? children : <AppRoot>{children}</AppRoot>}
       </body>
     </html>
   )

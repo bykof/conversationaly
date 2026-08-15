@@ -37,6 +37,7 @@ pub(crate) use perf_trace;
 // Declare audio module
 pub mod api;
 pub mod audio;
+pub mod call_detector;
 pub mod config;
 pub mod console_utils;
 pub mod database;
@@ -425,6 +426,9 @@ pub fn run() {
                 log::error!("Failed to create system tray: {}", e);
             }
 
+            // Nudge the user to record when a meeting app launches
+            call_detector::spawn(_app.handle().clone());
+
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
             let app_for_notif = _app.handle().clone();
@@ -515,6 +519,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            call_detector::nudge_start_recording,
+            call_detector::nudge_dismiss,
             start_recording,
             stop_recording,
             is_recording,

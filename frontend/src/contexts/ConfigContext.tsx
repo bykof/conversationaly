@@ -37,6 +37,7 @@ export interface NotificationSettings {
     show_transcription_complete: boolean;
     show_meeting_reminders: boolean;
     show_system_errors: boolean;
+    show_call_detected: boolean;
     meeting_reminder_minutes: number[];
   };
 }
