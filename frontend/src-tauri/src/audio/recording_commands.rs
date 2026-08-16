@@ -45,6 +45,10 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+// The `mic-level` emitter. Lives exactly as long as the microphone is open —
+// including a start that opens capture and then fails its model load.
+static MIC_LEVEL_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
 // ============================================================================
 // PUBLIC TYPES
 // ============================================================================
@@ -59,6 +63,80 @@ pub struct TranscriptionStatus {
     pub chunks_in_queue: usize,
     pub is_processing: bool,
     pub last_activity_ms: u64,
+}
+
+/// Payload of the `mic-level` event.
+#[derive(Debug, Serialize, Clone)]
+pub struct MicLevel {
+    /// Raw microphone RMS, 0..1 of full scale, tapped before any processing.
+    pub rms: f32,
+    /// Whether the microphone has delivered a single frame this recording.
+    /// False for the whole meeting means the device opened and gave us nothing.
+    pub armed: bool,
+}
+
+// ============================================================================
+// LEVEL METER
+// ============================================================================
+
+/// How often `mic-level` is emitted.
+///
+/// The meter's only job is to answer "is it still capturing?" at a glance, and
+/// it can only do that if it visibly tracks a voice. 100ms is about the slowest
+/// tick that still reads as tracking rather than sampling; the payload is two
+/// scalars, so the cost is the IPC hop, not the work.
+const MIC_LEVEL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Emit `mic-level` for as long as this recording's microphone is open.
+///
+/// Holds an `Arc<RecordingState>` rather than reaching through
+/// `RECORDING_MANAGER` on every tick: that global is a `std::sync::Mutex`
+/// contended by the transcript listener and by stop, and locking it ten times a
+/// second to read two atomics would be the only reason to do so.
+fn spawn_mic_level_emitter<R: Runtime>(
+    app: AppHandle<R>,
+    state: Arc<super::recording_state::RecordingState>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(MIC_LEVEL_INTERVAL);
+        // A tick missed behind a busy runtime is stale by the time it lands, and
+        // a meter that catches up in a burst is worse than one that skips.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            ticker.tick().await;
+            // Backstop for any teardown path that forgets to abort this task:
+            // it can outlive a recording by at most one tick.
+            if !IS_RECORDING.load(Ordering::SeqCst) {
+                break;
+            }
+            let _ = app.emit(
+                "mic-level",
+                MicLevel {
+                    rms: state.mic_level(),
+                    armed: state.frames_captured() > 0,
+                },
+            );
+        }
+    })
+}
+
+/// Stop the emitter and park the meter at zero.
+///
+/// The final zero is not cosmetic: without it the bar holds whatever was being
+/// said at the moment capture ended, which is precisely the "still showing
+/// signal after the mic is gone" reading the meter exists to rule out.
+fn stop_mic_level_emitter<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(handle) = MIC_LEVEL_TASK.lock().unwrap().take() {
+        handle.abort();
+    }
+    let _ = app.emit(
+        "mic-level",
+        MicLevel {
+            rms: 0.0,
+            armed: false,
+        },
+    );
 }
 
 // ============================================================================
@@ -98,6 +176,10 @@ fn fail_start<R: Runtime>(app: &AppHandle<R>, error: String) -> String {
 /// leaving IS_RECORDING set would wedge every later start behind "Recording
 /// already in progress" until the app restarts.
 async fn abort_started_capture<R: Runtime>(app: &AppHandle<R>, error: &str) {
+    // Before anything else: the meter was started the moment capture began, and
+    // this path tears capture down. Leaving it running would keep the UI
+    // reporting a live microphone for a recording that no longer exists.
+    stop_mic_level_emitter(app);
     let manager = RECORDING_MANAGER.lock().unwrap().take();
     if let Some(mut manager) = manager {
         // No save: there is no meeting here, just a few seconds of audio
@@ -296,6 +378,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         .await
         .map_err(|e| fail_start(&app, format!("Failed to start recording: {}", e)))?;
     let capture_timings = manager.start_timings();
+    // Taken before the manager moves into the global, so the emitter never has
+    // to lock RECORDING_MANAGER to read a level.
+    let meter_state = Arc::clone(manager.get_state());
 
     // Store the manager globally to keep it alive
     {
@@ -307,6 +392,15 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
     reset_speech_detected_flag(); // Reset for new recording session
+
+    // Start the level meter here, not after the model load below. The
+    // microphone is already open, so this is the stretch where the user most
+    // needs to see that it is — and the stretch a failed load will tear down,
+    // which `abort_started_capture` handles.
+    {
+        let handle = spawn_mic_level_emitter(app.clone(), meter_state);
+        *MIC_LEVEL_TASK.lock().unwrap() = Some(handle);
+    }
 
     // Only now load the model.
     //
@@ -484,6 +578,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         .await
         .map_err(|e| fail_start(&app, format!("Failed to start recording: {}", e)))?;
     let capture_timings = manager.start_timings();
+    // Taken before the manager moves into the global, so the emitter never has
+    // to lock RECORDING_MANAGER to read a level.
+    let meter_state = Arc::clone(manager.get_state());
 
     // Store the manager globally to keep it alive
     {
@@ -495,6 +592,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
     reset_speech_detected_flag(); // Reset for new recording session
+
+    // Start the level meter here, not after the model load below. The
+    // microphone is already open, so this is the stretch where the user most
+    // needs to see that it is — and the stretch a failed load will tear down,
+    // which `abort_started_capture` handles.
+    {
+        let handle = spawn_mic_level_emitter(app.clone(), meter_state);
+        *MIC_LEVEL_TASK.lock().unwrap() = Some(handle);
+    }
 
     // Load the model only now that capture is live — see the twin comment in
     // `start_recording_with_meeting_name`.
@@ -621,6 +727,10 @@ pub async fn stop_recording<R: Runtime>(
     };
 
     let (stop_result, manager_for_cleanup) = stop_result;
+
+    // The microphone is shut either way; nothing after this point can produce a
+    // level, and the drain below can take minutes.
+    stop_mic_level_emitter(&app);
 
     match stop_result {
         Ok(_) => {
@@ -953,7 +1063,11 @@ pub async fn get_recording_state() -> serde_json::Value {
             "recording_duration": manager.get_recording_duration(),
             "active_duration": manager.get_active_recording_duration(),
             "total_pause_duration": manager.get_total_pause_duration(),
-            "current_pause_duration": manager.get_current_pause_duration()
+            "current_pause_duration": manager.get_current_pause_duration(),
+            // Zero while the elapsed timer is already ticking means the
+            // microphone opened and has delivered nothing. The UI turns this
+            // into "Waiting for audio" rather than a confident "Listening".
+            "mic_frames": manager.get_state().frames_captured()
         })
     } else {
         serde_json::json!({
@@ -963,7 +1077,8 @@ pub async fn get_recording_state() -> serde_json::Value {
             "recording_duration": null,
             "active_duration": null,
             "total_pause_duration": 0.0,
-            "current_pause_duration": null
+            "current_pause_duration": null,
+            "mic_frames": 0
         })
     }
 }
