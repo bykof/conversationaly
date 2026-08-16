@@ -17,6 +17,7 @@ pub mod adapters;
 pub mod ports;
 pub mod service;
 
+use adapters::bench_sink::BenchSink;
 use adapters::segmented::{Decoder, SegmentedTranscriber};
 use adapters::streaming::StreamingTranscriber;
 use adapters::tauri_sink::TauriSink;
@@ -93,11 +94,23 @@ pub fn start_transcription_task<R: Runtime>(
         let joined = tokio::task::spawn_blocking(move || {
             let mut session = session;
             let run_options = RunOptions { language, ..Default::default() };
-            let sink = TauriSink::new(app.clone());
+            // One wrap here covers both decode paths below, because both reach
+            // the user through this sink. Instrumentation belongs at the
+            // composition root for the same reason adapter choice does.
+            let sink = BenchSink::new(TauriSink::new(app.clone()));
 
             if streaming {
                 match session.stream(&run_options, &StreamOptions::default()) {
-                    Ok(stream) => service::run(StreamingTranscriber::new(stream), sink, receiver),
+                    // Only this path opts into the lag warning. The segmented
+                    // adapter below already warns when its backlog cap starts
+                    // dropping audio; the streaming path has no cap, so nothing
+                    // otherwise tells a user that the transcript has quietly
+                    // drifted half a minute behind them.
+                    Ok(stream) => service::run(
+                        StreamingTranscriber::new(stream),
+                        sink.warn_when_behind(),
+                        receiver,
+                    ),
                     Err(e) => {
                         TauriSink::fatal(&app, &format!("Failed to begin transcription stream: {e}"))
                     }
@@ -185,7 +198,7 @@ async fn run_builtin_audio_llm<R: Runtime>(
     // the handle rather than the whole loop becoming async.
     let handle = tokio::runtime::Handle::current();
     let joined = tokio::task::spawn_blocking(move || {
-        let sink = TauriSink::new(app.clone());
+        let sink = BenchSink::new(TauriSink::new(app.clone()));
         let decoder = Decoder::AudioLlm { handle, app_data_dir, model };
         match SegmentedTranscriber::new(decoder) {
             Ok(transcriber) => service::run(transcriber, sink, receiver),
