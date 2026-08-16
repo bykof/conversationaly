@@ -1,7 +1,5 @@
 #[cfg(target_os = "windows")]
 use std::ptr;
-#[cfg(target_os = "windows")]
-use env_logger;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -30,9 +28,11 @@ pub fn show_console() -> Result<String, String> {
             if AllocConsole() == 0 {
                 return Err("Failed to allocate console".to_string());
             }
-            // Reinitialize stdout, stdin, stderr for the new console
-            std::env::set_var("RUST_LOG", "info");
-            env_logger::init();
+            // No logger init here. This used to re-run `env_logger::init()`,
+            // which would have panicked (a logger was already installed in
+            // main) had anyone reached it. tauri-plugin-log's Stdout target
+            // writes through GetStdHandle, which AllocConsole has just
+            // repointed at the new console, so output arrives on its own.
         } else {
             // Show existing console window
             ShowWindow(console_window, SW_SHOW);
@@ -105,6 +105,14 @@ pub fn hide_console() -> Result<String, String> {
         Ok("Console control is only available on Windows and macOS".to_string())
     }
 }
+
+/// Basename of the rotating log file, without extension.
+///
+/// `lib.rs::log_plugin()` hands this same constant to tauri-plugin-log as
+/// `TargetKind::LogDir { file_name }`; the plugin appends `.log` and writes it
+/// into `app_log_dir()`. Shared rather than spelled twice so the path this
+/// module reports cannot drift from the file the logger actually writes.
+pub const LOG_FILE_STEM: &str = "conversationaly";
 
 #[tauri::command]
 pub fn toggle_console() -> Result<String, String> {
