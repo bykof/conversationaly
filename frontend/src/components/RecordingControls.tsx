@@ -9,7 +9,18 @@ import { listen } from '@tauri-apps/api/event';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { LiveIndicator } from '@/components/LiveIndicator';
+import type { StartPhase } from '@/hooks/useRecordingStart';
 import { cn } from '@/lib/utils';
+
+/**
+ * Pending-state copy. Every phase names itself in words, so the button stays
+ * readable with the spinner suppressed under `prefers-reduced-motion`.
+ */
+const START_PHASE_LABEL: Record<Exclude<StartPhase, 'idle'>, string> = {
+  'starting': 'Starting…',
+  'loading-model': 'Loading model…',
+  'waiting-for-previous': 'Waiting for the previous recording to finish…',
+};
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -17,6 +28,8 @@ interface RecordingControlsProps {
   onRecordingStart: () => void;
   /** Owned by useRecordingStart — covers the button, sidebar and tray start paths. */
   isStarting: boolean;
+  /** What that start is currently blocked on, for the button label. */
+  startPhase: StartPhase;
   onTranscriptReceived: (summary: SummaryResponse) => void;
   onTranscriptionError?: (message: string) => void;
   onStopInitiated?: () => void; // Called immediately when stop button is clicked
@@ -34,6 +47,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onRecordingStop,
   onRecordingStart,
   isStarting,
+  startPhase,
   onTranscriptReceived,
   onTranscriptionError,
   onStopInitiated,
@@ -371,13 +385,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               'disabled:pointer-events-none disabled:opacity-45'
             )}
           >
-            {isStarting ? (
+            {isStarting && startPhase !== 'idle' ? (
               <>
                 {/* Reduced motion must not remove information: the spinner goes
-                    away rather than freezing mid-rotation, and the state word
+                    away rather than freezing mid-rotation, and the phase word
                     beside it carries the state on its own. */}
                 <Loader2 className="h-4 w-4 animate-spin motion-reduce:hidden" aria-hidden />
-                Starting…
+                {START_PHASE_LABEL[startPhase]}
               </>
             ) : (
               <>

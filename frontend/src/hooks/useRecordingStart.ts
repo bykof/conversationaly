@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -8,10 +9,32 @@ import { recordingService } from '@/services/recordingService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { toast } from 'sonner';
 
+/**
+ * What the start is currently blocked on. Only ever non-`idle` while
+ * `isStarting` is true — the two are set and cleared together.
+ *
+ * `waiting-for-previous` exists because `start_recording_with_devices_and_meeting`
+ * parks on the same engine lifecycle lock that a draining `stop_recording` holds.
+ * That wait can be long, and an indefinite spinner reads as a hang.
+ */
+export type StartPhase =
+  | 'idle'
+  | 'starting'
+  | 'loading-model'
+  | 'waiting-for-previous';
+
 interface UseRecordingStartReturn {
   handleRecordingStart: () => Promise<void>;
   isStarting: boolean;
+  startPhase: StartPhase;
 }
+
+/** Statuses during which the previous recording still owns the engine lifecycle lock. */
+const DRAINING_STATUSES: RecordingStatus[] = [
+  RecordingStatus.STOPPING,
+  RecordingStatus.PROCESSING_TRANSCRIPTS,
+  RecordingStatus.SAVING,
+];
 
 /**
  * Custom hook for managing recording start lifecycle.
@@ -32,15 +55,23 @@ export function useRecordingStart(
   showModal?: (name: 'modelSelector', message?: string) => void
 ): UseRecordingStartReturn {
   const [isStarting, setIsStarting] = useState(false);
+  const [startPhase, setStartPhase] = useState<StartPhase>('idle');
 
   const { clearTranscripts, setMeetingTitle } = useTranscripts();
   const { setIsMeetingActive } = useSidebar();
   const { selectedDevices } = useConfig();
-  const { setStatus } = useRecordingState();
+  const { setStatus, status } = useRecordingState();
 
   // Re-entrancy guard. This has to be a ref, not the `isStarting` state: two
   // clicks dispatched before React commits would both read the stale `false`.
   const isStartingRef = useRef(false);
+
+  // Latest lifecycle status, readable from a starter without making every
+  // starter callback depend on (and be rebuilt by) each status transition.
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   /**
    * Claim the start. Returns false when a start is already in flight, in which
@@ -53,6 +84,9 @@ export function useRecordingStart(
     if (isStartingRef.current) return false;
     isStartingRef.current = true;
     setIsStarting(true);
+    setStartPhase(
+      DRAINING_STATUSES.includes(statusRef.current) ? 'waiting-for-previous' : 'starting'
+    );
     return true;
   }, []);
 
@@ -60,6 +94,46 @@ export function useRecordingStart(
   const endStart = useCallback(() => {
     isStartingRef.current = false;
     setIsStarting(false);
+    setStartPhase('idle');
+  }, []);
+
+  // Model load is the slowest leg of a cold start, so it gets its own label.
+  // These three events are an existing stable contract from
+  // transcribe_engine/commands.rs (transcribe_load_model emits them).
+  useEffect(() => {
+    let cancelled = false;
+    let unlisteners: UnlistenFn[] = [];
+
+    const setupListeners = async () => {
+      try {
+        const onStarted = await listen('model-loading-started', () => {
+          if (isStartingRef.current) setStartPhase('loading-model');
+        });
+        // Model is up but the start invoke has not returned yet — fall back to
+        // the generic label rather than claiming the model is still loading.
+        const clearModelPhase = () =>
+          setStartPhase(prev => (prev === 'loading-model' ? 'starting' : prev));
+        const onCompleted = await listen('model-loading-completed', clearModelPhase);
+        const onFailed = await listen('model-loading-failed', clearModelPhase);
+
+        if (cancelled) {
+          onStarted();
+          onCompleted();
+          onFailed();
+          return;
+        }
+        unlisteners = [onStarted, onCompleted, onFailed];
+      } catch (error) {
+        console.error('Failed to set up model loading listeners:', error);
+      }
+    };
+
+    setupListeners();
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach(unlisten => unlisten());
+    };
   }, []);
 
   // Generate meeting title with timestamp
@@ -329,5 +403,6 @@ export function useRecordingStart(
   return {
     handleRecordingStart,
     isStarting,
+    startPhase,
   };
 }
