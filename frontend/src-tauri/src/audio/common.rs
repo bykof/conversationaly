@@ -4,6 +4,7 @@ use log::{debug, info};
 use once_cell::sync::Lazy;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use uuid::Uuid;
 
@@ -12,6 +13,123 @@ static ENGINE_LIFECYCLE_LOCK: Lazy<Arc<AsyncMutex<()>>> =
 
 pub(crate) async fn acquire_engine_lifecycle_lock() -> OwnedMutexGuard<()> {
     ENGINE_LIFECYCLE_LOCK.clone().lock_owned().await
+}
+
+/// When the transcription engine was last wanted by anybody.
+///
+/// `Instant`, not wall clock: the deadline below must not move when the user
+/// crosses a DST boundary or NTP steps the clock mid-meeting.
+static ENGINE_LAST_USE: Lazy<AsyncMutex<Instant>> = Lazy::new(|| AsyncMutex::new(Instant::now()));
+
+/// How long the loaded transcription model may sit unused before it is dropped.
+///
+/// Deliberately the sidecar's number (`DEFAULT_IDLE_TIMEOUT_SECS`, 5 minutes)
+/// rather than a second one to keep in sync. `TRANSCRIBE_IDLE_TIMEOUT`
+/// overrides it, mirroring the sidecar's `LLAMA_IDLE_TIMEOUT`.
+fn engine_idle_timeout() -> Duration {
+    let secs = std::env::var("TRANSCRIBE_IDLE_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(crate::summary::summary_engine::models::DEFAULT_IDLE_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Push the idle deadline out. Call this whenever the engine is loaded, used,
+/// or released — recording start, recording stop, batch engine init.
+pub(crate) async fn touch_engine_idle() {
+    *ENGINE_LAST_USE.lock().await = Instant::now();
+}
+
+/// How long since the last [`touch_engine_idle`].
+pub(crate) async fn engine_idle_elapsed() -> Duration {
+    ENGINE_LAST_USE.lock().await.elapsed()
+}
+
+/// Is a batch job (import or retranscription) holding the engine right now?
+fn batch_in_progress() -> bool {
+    crate::audio::import::is_import_in_progress()
+        || crate::audio::retranscription::is_retranscription_in_progress()
+}
+
+/// The decision one tick of the idle unloader makes, as a pure function so the
+/// policy is testable without a model, a recording, or a Tauri app.
+fn should_unload_idle(
+    recording: bool,
+    batch_running: bool,
+    idle: Duration,
+    timeout: Duration,
+) -> bool {
+    !recording && !batch_running && idle > timeout
+}
+
+/// Drop the transcription model's weights once nobody has wanted them for
+/// [`engine_idle_timeout`].
+///
+/// This is not an optimisation, it is the other half of *not* unloading at
+/// `stop_recording`. transcribe.cpp does not mmap — it streams the GGUF through
+/// `std::ifstream` and copies each tensor in, so the weights are ~716 MB of
+/// non-purgeable resident memory that nothing would ever reclaim on its own.
+///
+/// Modelled on `SidecarManager::start_idle_check_loop`: same timeout, same 60s
+/// tick, same `Skip` behaviour so a stalled tick does not fire a burst of
+/// catch-up ticks.
+pub(crate) fn spawn_engine_idle_unloader() {
+    tauri::async_runtime::spawn(async move {
+        let timeout = engine_idle_timeout();
+        log::info!(
+            "Transcription engine idle unloader started (timeout: {}s)",
+            timeout.as_secs()
+        );
+
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+
+            if !should_unload_idle(
+                crate::audio::recording_commands::is_recording_now(),
+                batch_in_progress(),
+                engine_idle_elapsed().await,
+                timeout,
+            ) {
+                continue;
+            }
+
+            let engine = {
+                let guard = crate::transcribe_engine::commands::TRANSCRIBE_ENGINE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                guard.as_ref().cloned()
+            };
+            let Some(engine) = engine else { continue };
+            if !engine.is_model_loaded().await {
+                continue;
+            }
+
+            let _engine_lifecycle_guard = acquire_engine_lifecycle_lock().await;
+
+            // Re-check under the lock. Everything above raced whoever else was
+            // holding it: a recording that started while we waited would have
+            // its weights pulled out from under a live stream. This re-check is
+            // the whole correctness argument for running unattended.
+            if crate::audio::recording_commands::is_recording_now() || batch_in_progress() {
+                continue;
+            }
+
+            let model = engine
+                .get_current_model()
+                .await
+                .unwrap_or_else(|| "unknown".to_string());
+            if engine.unload_model().await {
+                log::info!(
+                    "Unloaded transcription model '{}' after {}s idle",
+                    model,
+                    timeout.as_secs()
+                );
+            }
+        }
+    });
 }
 
 /// Unload the transcription engine after a batch job (import or retranscription).
@@ -342,6 +460,51 @@ mod tests {
 
         acquired_rx.await.unwrap();
         waiter.await.unwrap();
+    }
+
+    const FIVE_MIN: Duration = Duration::from_secs(300);
+
+    /// The reason the re-check under the lifecycle lock exists: a live stream
+    /// pins the weights, so idleness is never on its own a reason to unload.
+    #[test]
+    fn idle_unloader_never_unloads_while_recording() {
+        assert!(
+            !should_unload_idle(true, false, Duration::from_secs(9999), FIVE_MIN),
+            "recording outranks any amount of idle time"
+        );
+        assert!(
+            !should_unload_idle(false, true, Duration::from_secs(9999), FIVE_MIN),
+            "so does a batch job — import and retranscription hold the same engine"
+        );
+    }
+
+    #[test]
+    fn idle_unloader_unloads_once_the_timeout_passes() {
+        assert!(
+            !should_unload_idle(false, false, Duration::from_secs(299), FIVE_MIN),
+            "still inside the window"
+        );
+        assert!(should_unload_idle(
+            false,
+            false,
+            Duration::from_secs(301),
+            FIVE_MIN
+        ));
+    }
+
+    /// Any use of the engine has to reset the clock, or a long meeting followed
+    /// by a short pause would look idle enough to unload.
+    #[tokio::test]
+    async fn touch_engine_idle_pushes_the_deadline_out() {
+        *ENGINE_LAST_USE.lock().await = Instant::now() - Duration::from_secs(3600);
+        let stale = engine_idle_elapsed().await;
+        assert!(should_unload_idle(false, false, stale, FIVE_MIN));
+
+        touch_engine_idle().await;
+
+        let fresh = engine_idle_elapsed().await;
+        assert!(fresh < Duration::from_secs(1), "{fresh:?}");
+        assert!(!should_unload_idle(false, false, fresh, FIVE_MIN));
     }
 
     #[test]

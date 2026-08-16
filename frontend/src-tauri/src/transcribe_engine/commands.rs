@@ -54,6 +54,11 @@ fn engine() -> Result<Arc<TranscribeEngine>, String> {
 
 #[command]
 pub async fn transcribe_init() -> Result<(), String> {
+    // The shared entry point of both batch engine-init paths
+    // (`import::get_or_init_transcribe` and its retranscription twin), so a
+    // batch job starting resets the idle unloader's clock before it loads.
+    crate::audio::common::touch_engine_idle().await;
+
     let mut guard = TRANSCRIBE_ENGINE.lock().unwrap();
     if guard.is_some() {
         return Ok(());

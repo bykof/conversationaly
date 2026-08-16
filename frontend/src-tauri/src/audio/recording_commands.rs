@@ -634,39 +634,28 @@ pub async fn stop_recording<R: Runtime>(
         }
     }
 
-    // Step 3: Now safely unload Whisper model after ALL chunks are processed
+    // Step 3: the model stays loaded.
+    //
+    // This used to unload it here, which made every recording pay a fresh 716 MB
+    // read: transcribe.cpp does not mmap, it streams the GGUF through
+    // `std::ifstream` and copies each tensor in. That load sits ahead of capture
+    // start, so the whole of it is meeting audio nobody hears. Keeping the
+    // weights makes the second start of a session nearly free.
+    //
+    // Memory is reclaimed by `spawn_engine_idle_unloader` instead — once nobody
+    // has wanted the engine for five minutes, which a user starting another
+    // meeting never is.
     let _ = app.emit(
         "recording-shutdown-progress",
         serde_json::json!({
-            "stage": "unloading_model",
-            "message": "Unloading speech recognition model...",
+            "stage": "finalizing",
+            "message": "Finalizing transcription...",
             "progress": 70
         }),
     );
 
-    info!("🧠 All transcript chunks processed. Now safely unloading transcription model...");
-
-    // One engine now, so there is no provider to look up before unloading.
-    let engine = {
-        let guard = crate::transcribe_engine::commands::TRANSCRIBE_ENGINE
-            .lock()
-            .unwrap();
-        guard.as_ref().cloned()
-    };
-
-    if let Some(engine) = engine {
-        let current_model = engine
-            .get_current_model()
-            .await
-            .unwrap_or_else(|| "unknown".to_string());
-        if engine.unload_model().await {
-            info!("✅ Model '{}' unloaded successfully", current_model);
-        } else {
-            info!("No model was loaded, nothing to unload");
-        }
-    } else {
-        warn!("⚠️ No transcription engine found to unload model");
-    }
+    info!("🧠 All transcript chunks processed. Leaving the model loaded for the next recording");
+    super::common::touch_engine_idle().await;
 
     // Step 4: Finalize recording state and cleanup resources safely
     let _ = app.emit(
