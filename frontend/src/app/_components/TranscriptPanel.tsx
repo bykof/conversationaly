@@ -114,7 +114,6 @@ export function TranscriptPanel({
             isPaused={isPaused}
             isProcessing={isProcessingStop}
             isStopping={isStopping}
-            enableStreaming={isRecording}
             partialText={partialText}
             showConfidence={true}
           />
