@@ -47,8 +47,12 @@ pub fn run(
     info!("🎙️ Live transcription ended after {chunks} audio chunks");
 }
 
+// `pub(crate)` rather than private: `FakeSink` is the crate's one honest
+// stand-in for the driven port, and `adapters/bench_sink.rs` needs exactly it
+// to prove its decorator changes nothing. A second copy over there would be a
+// second thing to keep in step with the port.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::audio::recording_state::DeviceType;
     use crate::audio::transcription::ports::TranscriptChunk;
@@ -56,14 +60,14 @@ mod tests {
 
     /// What a sink was told. Shared, because `run` takes the sink by value.
     #[derive(Default)]
-    struct Recorded {
-        committed: Vec<String>,
-        tentative: Vec<String>,
-        warnings: Vec<String>,
+    pub(crate) struct Recorded {
+        pub committed: Vec<String>,
+        pub tentative: Vec<String>,
+        pub warnings: Vec<String>,
     }
 
     #[derive(Default, Clone)]
-    struct FakeSink(std::sync::Arc<std::sync::Mutex<Recorded>>);
+    pub(crate) struct FakeSink(pub std::sync::Arc<std::sync::Mutex<Recorded>>);
 
     impl TranscriptSink for FakeSink {
         fn committed(&mut self, chunk: TranscriptChunk) {
