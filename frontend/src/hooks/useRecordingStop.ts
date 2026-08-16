@@ -204,19 +204,15 @@ export function useRecordingStop(
       // Yield one macrotask so any transcript-update event already queued by the
       // webview is delivered into the buffer before we flush it.
       await new Promise(resolve => setTimeout(resolve, 0));
-      flushBuffer();
+      const flushedTranscripts = flushBuffer();
       const flushEndTime = Date.now();
       console.log('✅ Final buffer flush completed', {
         flush_duration: flushEndTime - flushStartTime,
         total_time_since_stop: flushEndTime - stopStartTime,
-        final_transcript_count: transcriptsRef.current.length
+        final_transcript_count: flushedTranscripts.length
       });
 
       // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
-
-      // Wait a bit more to ensure all transcript state updates have been processed
-      console.log('Waiting for transcript state updates to complete...');
-      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
@@ -225,8 +221,9 @@ export function useRecordingStop(
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
+        // The array flushBuffer just returned — authoritative without waiting
+        // for React to commit, which is what the old 500 ms sleep was for.
+        const freshTranscripts = [...flushedTranscripts];
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');

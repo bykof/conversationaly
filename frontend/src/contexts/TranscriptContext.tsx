@@ -15,7 +15,8 @@ interface TranscriptContextType {
   partialText: string;
   addTranscript: (update: TranscriptUpdate) => void;
   copyTranscript: () => void;
-  flushBuffer: () => void;
+  /** Flushes buffered transcripts and returns the resulting array synchronously. */
+  flushBuffer: () => Transcript[];
   transcriptContainerRef: React.RefObject<HTMLDivElement | null>;
   meetingTitle: string;
   setMeetingTitle: (title: string) => void;
@@ -38,9 +39,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Refs for transcript management
   const transcriptsRef = useRef<Transcript[]>(transcripts);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
-  const finalFlushRef = useRef<(() => void) | null>(null);
+  const finalFlushRef = useRef<(() => Transcript[]) | null>(null);
 
-  // Keep ref updated with current transcripts
+  // Backstop for the writers that go through setState alone (reload sync,
+  // clearTranscripts). The buffering path assigns transcriptsRef itself,
+  // synchronously, because flushBuffer's caller cannot wait for a commit.
   useEffect(() => {
     transcriptsRef.current = transcripts;
   }, [transcripts]);
@@ -203,7 +206,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     let lastProcessedSequence = 0;
     let processingTimer: NodeJS.Timeout | undefined;
 
-    const processBufferedTranscripts = (forceFlush = false) => {
+    const processBufferedTranscripts = (forceFlush = false): Transcript[] => {
       const sortedTranscripts: Transcript[] = [];
 
       // Process all available sequential transcripts
@@ -261,33 +264,38 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       const allNewTranscripts = [...sortedTranscripts, ...sortedRecentTranscripts, ...sortedStaleTranscripts, ...sortedForceFlushTranscripts];
 
       if (allNewTranscripts.length > 0) {
-        setTranscripts(prev => {
-          // Create a set of existing sequence_ids for deduplication
-          const existingSequenceIds = new Set(prev.map(t => t.sequence_id).filter(id => id !== undefined));
+        // transcriptsRef — not the setState `prev` argument — is the authority
+        // for this merge, and is assigned synchronously below. The stop path
+        // reads the flushed array back the instant flushBuffer() returns, long
+        // before React commits the state update, so a merge that only existed
+        // inside an updater callback would hand it a stale array.
+        const prev = transcriptsRef.current;
 
-          // Filter out any new transcripts that already exist
-          const uniqueNewTranscripts = allNewTranscripts.filter(transcript =>
-            transcript.sequence_id !== undefined && !existingSequenceIds.has(transcript.sequence_id)
-          );
+        // Create a set of existing sequence_ids for deduplication
+        const existingSequenceIds = new Set(prev.map(t => t.sequence_id).filter(id => id !== undefined));
 
-          // Only combine if we have unique new transcripts
-          if (uniqueNewTranscripts.length === 0) {
-            console.log('No unique transcripts to add - all were duplicates');
-            return prev; // No new unique transcripts to add
-          }
+        // Filter out any new transcripts that already exist
+        const uniqueNewTranscripts = allNewTranscripts.filter(transcript =>
+          transcript.sequence_id !== undefined && !existingSequenceIds.has(transcript.sequence_id)
+        );
 
+        // Only combine if we have unique new transcripts
+        if (uniqueNewTranscripts.length === 0) {
+          console.log('No unique transcripts to add - all were duplicates');
+        } else {
           console.log(`Adding ${uniqueNewTranscripts.length} unique transcripts out of ${allNewTranscripts.length} received`);
 
-          // Merge with existing transcripts, maintaining chronological order
-          const combined = [...prev, ...uniqueNewTranscripts];
-
-          // Sort by chunk_start_time first, then by sequence_id
-          return combined.sort((a, b) => {
+          // Merge with existing transcripts, sorting by chunk_start_time first,
+          // then by sequence_id
+          const combined = [...prev, ...uniqueNewTranscripts].sort((a, b) => {
             const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
             if (chunkTimeDiff !== 0) return chunkTimeDiff;
             return (a.sequence_id || 0) - (b.sequence_id || 0);
           });
-        });
+
+          transcriptsRef.current = combined;
+          setTranscripts(combined);
+        }
 
         // Log the processing summary
         const logMessage = forceFlush
@@ -295,6 +303,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           : `Processed ${allNewTranscripts.length} transcripts (${sortedTranscripts.length} sequential, ${recentTranscripts.length} recent, ${staleTranscripts.length} stale)`;
         console.log(logMessage);
       }
+
+      return transcriptsRef.current;
     };
 
     // Assign final flush function to ref for external access
@@ -490,12 +500,15 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     toast.success("Transcript copied to clipboard");
   }, [transcripts]);
 
-  // Force flush buffer (for final transcript processing)
-  const flushBuffer = useCallback(() => {
+  // Force flush buffer (for final transcript processing).
+  // Returns the flushed transcripts synchronously, so the stop path can save
+  // them without waiting for React to commit the corresponding state update.
+  const flushBuffer = useCallback((): Transcript[] => {
     if (finalFlushRef.current) {
       console.log('🔄 Flushing transcript buffer...');
-      finalFlushRef.current();
+      return finalFlushRef.current();
     }
+    return transcriptsRef.current;
   }, []);
 
   // Clear transcripts (used when starting new recording)
