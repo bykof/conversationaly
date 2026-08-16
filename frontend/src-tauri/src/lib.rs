@@ -386,10 +386,67 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
-pub fn run() {
-    log::set_max_level(log::LevelFilter::Info);
+/// The logging plugin: stdout plus a rotating file in the OS app log dir.
+///
+/// Until this existed the only diagnostics that survived a session were
+/// whatever the user thought to capture from a terminal — nothing at all on a
+/// Windows release build. Model-load timing, capture health, mix-rate drift and
+/// the "transcribing slower than you are speaking" warning were all being
+/// emitted at info! and thrown away.
+///
+/// 4 MB and KeepOne: a meeting runs 30-120 minutes, so the budget has to cover
+/// a long session's worth of info-level lines, not a dictation app's few
+/// seconds. One rotated backup is enough to survive a restart mid-report.
+///
+/// The level comes from RUST_LOG and defaults to info. Nothing here hardcodes a
+/// level, and nothing sets RUST_LOG — that is exactly what made
+/// `./clean_run.sh debug` a no-op for as long as it has been documented.
+fn log_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri_plugin_log::Builder::new()
+        .targets([
+            Target::new(TargetKind::Stdout),
+            Target::new(TargetKind::LogDir {
+                // Same constant `console_utils::get_log_file_path` reports, so
+                // the "Reveal log file" button cannot point at the wrong file.
+                file_name: Some(console_utils::LOG_FILE_STEM.into()),
+            }),
+        ])
+        .max_file_size(4 * 1024 * 1024)
+        .rotation_strategy(RotationStrategy::KeepOne)
+        .level(log::LevelFilter::Info);
+
+    // env_logger directive syntax, restricted to the two shapes this repo
+    // documents: a bare level ("debug") sets the global filter, "path=level"
+    // ("app_lib::audio=debug") sets a per-module one. Anything unparseable is
+    // skipped rather than silencing the whole app.
+    for directive in std::env::var("RUST_LOG").unwrap_or_default().split(',') {
+        let directive = directive.trim();
+        if directive.is_empty() {
+            continue;
+        }
+        match directive.split_once('=') {
+            Some((module, level)) => {
+                if let Ok(level) = level.trim().parse::<log::LevelFilter>() {
+                    builder = builder.level_for(module.trim().to_string(), level);
+                }
+            }
+            None => {
+                if let Ok(level) = directive.parse::<log::LevelFilter>() {
+                    builder = builder.level(level);
+                }
+            }
+        }
+    }
+
+    builder.build()
+}
+
+pub fn run() {
+    // Registered first: plugin setup runs in registration order, so anything
+    // logged by a later plugin's setup would be lost if this came after them.
+    let mut builder = tauri::Builder::default().plugin(log_plugin());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
@@ -416,6 +473,8 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            log::info!("Starting application...");
+
             // Before anything reads the data dirs.
             migrate::migrate_legacy_data_dirs(_app.handle());
 
@@ -570,6 +629,8 @@ pub fn run() {
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,
+            console_utils::get_log_file_path,
+            console_utils::reveal_log_file,
             ollama::get_ollama_models,
             ollama::pull_ollama_model,
             ollama::delete_ollama_model,
