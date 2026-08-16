@@ -582,8 +582,16 @@ impl AudioCapture {
         use std::sync::atomic::Ordering::Relaxed;
         let now = std::time::Instant::now();
         let _busy = BusyTimer { start: now, total: &self.busy_micros };
-        self.raw_frames
-            .fetch_add((data.len() / self.channels.max(1) as usize) as u64, Relaxed);
+        let frames = (data.len() / self.channels.max(1) as usize) as u64;
+        self.raw_frames.fetch_add(frames, Relaxed);
+        // Same count, shared with the UI rather than the log line: a non-zero
+        // `mic_frames` is what lets the transcript pane say "Listening" instead
+        // of "Waiting for audio". Microphone only — a mic that opened and
+        // delivers nothing is the failure being watched for, and system audio
+        // arriving would otherwise mask it.
+        if matches!(self.device_type, DeviceType::Microphone) {
+            self.state.note_frames(frames);
+        }
         self.callbacks.fetch_add(1, Relaxed);
 
         // The counters above stay unconditional — three atomics, and the health
@@ -610,6 +618,28 @@ impl AudioCapture {
         } else {
             data.to_vec()
         };
+
+        // The level meter's tap, and deliberately the *raw* signal: after the
+        // downmix, but ahead of the resampler, the high-pass, RNNoise and the
+        // R128 normalizer. Normalisation targets -23 LUFS, so it will lift a
+        // dead stream's noise floor into something that looks like a voice —
+        // a post-processed tap keeps the bar moving after the microphone has
+        // died, which is the exact failure this meter exists to catch.
+        //
+        // One relaxed store per callback and no branch on chunk count: this is
+        // the hot audio callback, so no lock, no allocation, no logging.
+        if matches!(self.device_type, DeviceType::Microphone) {
+            if self.state.is_paused() {
+                // `send_audio_chunk` discards everything that arrives while
+                // paused, so a bar still tracking the room here would be
+                // claiming capture that is not happening.
+                self.state.set_mic_level(0.0);
+            } else if !mono_data.is_empty() {
+                let sum_sq: f32 = mono_data.iter().map(|&x| x * x).sum();
+                self.state
+                    .set_mic_level((sum_sq / mono_data.len() as f32).sqrt());
+            }
+        }
 
         // CRITICAL FIX: Resample to 48kHz if device uses different sample rate
         // This fixes Bluetooth devices (like Sony WH-1000XM4) that report 16kHz or 44.1kHz

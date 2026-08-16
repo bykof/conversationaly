@@ -6,6 +6,7 @@ import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
+import { useRecordingState } from "@/contexts/RecordingStateContext";
 import { TranscriptSegmentData } from "@/types";
 import { Loader2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -133,6 +134,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     loadedCount = 0,
     onLoadMore,
 }) => {
+    // Has the microphone actually delivered a frame yet? Until it has, this
+    // pane must not claim to be listening.
+    const { captureArmed } = useRecordingState();
+
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -270,20 +275,34 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 <div className="flex min-h-[55vh] flex-col items-center justify-center px-6 text-center animate-fade-in">
                     {isRecording ? (
                         <>
+                            {/* Static until the microphone has actually handed
+                                over a frame. The pulse means "live", and a
+                                pulsing dot above the words "Waiting for audio"
+                                would contradict them. */}
                             <span
                                 aria-hidden
                                 className={cn(
                                     'mb-3 h-2.5 w-2.5 rounded-full',
-                                    isPaused ? 'bg-warn' : 'bg-danger animate-live'
+                                    isPaused
+                                        ? 'bg-warn'
+                                        : captureArmed
+                                          ? 'bg-danger animate-live'
+                                          : 'bg-ink-faint'
                                 )}
                             />
                             <p className="text-md font-medium text-ink">
-                                {isPaused ? 'Recording paused' : 'Listening'}
+                                {isPaused
+                                    ? 'Recording paused'
+                                    : captureArmed
+                                      ? 'Listening'
+                                      : 'Waiting for audio'}
                             </p>
                             <p className="mt-1 max-w-[34ch] text-base leading-relaxed text-ink-muted">
                                 {isPaused
                                     ? 'Resume from the transport below to keep capturing.'
-                                    : 'Speech appears here a few seconds after it is spoken.'}
+                                    : captureArmed
+                                      ? 'Speech appears here a few seconds after it is spoken.'
+                                      : 'The microphone is open but has not sent any audio yet. Bluetooth headsets can take a second or two.'}
                             </p>
                         </>
                     ) : (

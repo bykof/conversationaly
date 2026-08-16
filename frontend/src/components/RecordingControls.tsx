@@ -9,8 +9,26 @@ import { listen } from '@tauri-apps/api/event';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { LiveIndicator } from '@/components/LiveIndicator';
+import { AudioLevelMeter } from '@/components/AudioLevelMeter';
 import type { StartPhase } from '@/hooks/useRecordingStart';
 import { cn } from '@/lib/utils';
+
+/** Payload of the backend's 100ms `mic-level` event. */
+interface MicLevelPayload {
+  /** Raw microphone RMS, 0..1, tapped before resampling and noise suppression. */
+  rms: number;
+  /** Whether the microphone has delivered a single frame this recording. */
+  armed: boolean;
+}
+
+/**
+ * How fast the peak-hold falls back toward the live level, per 100ms tick.
+ *
+ * Peak-hold is what separates an instrument from a bar that wobbles: the
+ * highest recent level stays visible long enough to read. 0.88 empties a held
+ * peak over roughly two seconds.
+ */
+const PEAK_DECAY = 0.88;
 
 /**
  * Pending-state copy. Every phase names itself in words, so the button stays
@@ -68,6 +86,16 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
   const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
+
+  /**
+   * Live microphone level, driven by the backend's `mic-level` event.
+   *
+   * This is the answer to the only question a user asks during a 30-120 minute
+   * call: is it still capturing? The elapsed timer keeps ticking through a
+   * disconnected headset, an OS input switch, or another app taking the device
+   * — the bar does not.
+   */
+  const [micLevel, setMicLevel] = useState({ rms: 0, peak: 0 });
 
   useEffect(() => {
     const checkTauri = async () => {
@@ -234,6 +262,39 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   useEffect(() => {
     return () => {
       // Cleanup on unmount if needed
+    };
+  }, []);
+
+  /**
+   * Microphone level, on its own subscription.
+   *
+   * Deliberately not folded into the error-listener effect below: that one
+   * re-subscribes whenever its parent callbacks change identity, and this
+   * arrives ten times a second for the length of a meeting.
+   */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    listen<MicLevelPayload>('mic-level', (event) => {
+      const rms = event.payload.rms;
+      // Peak-hold rises instantly and falls slowly, so a short word still
+      // leaves a readable mark. Backend parks the level at 0 on stop, and the
+      // decay carries the held peak down with it.
+      setMicLevel(prev => ({ rms, peak: Math.max(rms, prev.peak * PEAK_DECAY) }));
+    }).then(fn => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    }).catch(error => {
+      console.error('Failed to subscribe to mic-level:', error);
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 
@@ -462,7 +523,22 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             <div className="mx-1 h-5 w-px bg-line" />
 
             {/* State in three channels at once: shape, word, advancing timer. */}
-            <LiveIndicator className="pr-2.5" />
+            <LiveIndicator />
+
+            {/* The fourth channel, and the only one that stops when capture
+                does. The three above keep running through a disconnected
+                headset. Motion here is data, not decoration, so it is not
+                suppressed under prefers-reduced-motion — and the component
+                prints the number beside the bar for anyone the motion does not
+                reach. */}
+            <AudioLevelMeter
+              rmsLevel={micLevel.rms}
+              peakLevel={micLevel.peak}
+              isActive={micLevel.rms > 0.002}
+              deviceName={selectedDevices?.micDevice || 'Microphone'}
+              size="small"
+              className="ml-2.5 w-32 pr-2"
+            />
           </>
         )}
       </div>
