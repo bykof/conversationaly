@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
+import { useRef, useReducer, startTransition, useEffect, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
@@ -21,13 +21,6 @@ export interface VirtualizedTranscriptViewProps {
     isProcessing?: boolean;
     /** Whether stopping */
     isStopping?: boolean;
-    /**
-     * @deprecated No-op. Used to gate an 800ms typewriter reveal that hid text
-     * the decoder had already committed; that is gone. Accepted only because
-     * `MeetingDetails/TranscriptPanel.tsx` still passes it — delete the field
-     * once that call site drops it.
-     */
-    enableStreaming?: boolean;
     /** Uncommitted live text from a streaming model; shown dimmed below the segments */
     partialText?: string;
     /** Show confidence indicators */
