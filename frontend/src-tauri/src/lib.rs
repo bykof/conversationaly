@@ -629,6 +629,8 @@ pub fn run() {
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,
+            console_utils::get_log_file_path,
+            console_utils::reveal_log_file,
             ollama::get_ollama_models,
             ollama::pull_ollama_model,
             ollama::delete_ollama_model,
