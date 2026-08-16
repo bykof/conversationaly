@@ -11,6 +11,12 @@ interface UseRecordingStateSyncReturn {
  * Custom hook for synchronizing frontend recording state with backend.
  * Polls backend every 1 second to detect recording state changes.
  *
+ * This is the reconciliation backstop, not the primary signal: the
+ * `recording-started` / `recording-stopped` events drive the UI, and this loop
+ * exists to catch a divergence they missed. It only calls setState when the
+ * backend and the UI actually disagree, so a steady state costs one `is_recording`
+ * command per second and no re-render.
+ *
  * Features:
  * - Backend state synchronization (1-second polling)
  * - Recording disabled flag management (prevents re-recording during processing)
@@ -27,10 +33,10 @@ export function useRecordingStateSync(
 
     const checkRecordingState = async () => {
       try {
-        console.log('checkRecordingState called');
-        console.log('About to call is_recording command');
+        // Deliberately silent on the happy path. This runs once a second for the
+        // life of the app; logging the agreeing case buried the divergences
+        // below — the only outcome worth reading — under ~10k lines an hour.
         const isCurrentlyRecording = await recordingService.isRecording();
-        console.log('checkRecordingState: backend recording =', isCurrentlyRecording, 'UI recording =', isRecording);
 
         if (isCurrentlyRecording && !isRecording) {
           console.log('Recording is active in backend but not in UI, synchronizing state...');
