@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode, MutableRefObject } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, ReactNode, MutableRefObject } from 'react';
 import { Transcript, TranscriptUpdate } from '@/types';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
@@ -544,7 +544,17 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     }
   }, [currentMeetingId]);
 
-  const value: TranscriptContextType = {
+  // Memoized so the provider re-rendering does not, by itself, invalidate every
+  // consumer. This provider subscribes to RecordingStateContext, which polls the
+  // backend on a timer, so it re-renders several times a second while a
+  // recording is in progress with nothing here changed.
+  //
+  // Every entry is either listed below or stable by construction: the two refs
+  // come from useRef, setMeetingTitle is a useState setter, and the four
+  // handlers are useCallback-wrapped. Adding a field here means adding it to the
+  // dependency array — an omission hands consumers a stale value, which is a
+  // worse bug than the re-renders this avoids.
+  const value = useMemo<TranscriptContextType>(() => ({
     transcripts,
     transcriptsRef,
     partialText,
@@ -557,7 +567,20 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     clearTranscripts,
     currentMeetingId,
     markMeetingAsSaved,
-  };
+  }), [
+    transcripts,
+    transcriptsRef,
+    partialText,
+    addTranscript,
+    copyTranscript,
+    flushBuffer,
+    transcriptContainerRef,
+    meetingTitle,
+    setMeetingTitle,
+    clearTranscripts,
+    currentMeetingId,
+    markMeetingAsSaved,
+  ]);
 
   return (
     <TranscriptContext.Provider value={value}>
