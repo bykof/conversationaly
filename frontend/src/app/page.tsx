@@ -38,7 +38,7 @@ export default function Home() {
   const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
-  const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
+  const { handleRecordingStart, isStarting } = useRecordingStart(isRecording, setIsRecordingState, showModal);
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
@@ -209,6 +209,7 @@ export default function Home() {
                 isRecording={recordingState.isRecording}
                 onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
                 onRecordingStart={handleRecordingStart}
+                isStarting={isStarting}
                 onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                 onStopInitiated={() => setIsStopping(true)}
                 onTranscriptionError={(message) => {
