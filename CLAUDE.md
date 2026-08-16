@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 3. **Legacy Backend Archive**: the old Python/FastAPI, Docker, and standalone whisper-server backend under `backend/` is archived and unsupported
 
 ### Key Technology Stack
-- **Desktop App**: Tauri 2.x (Rust) + Next.js 14 + React 18
+- **Desktop App**: Tauri 2.x (Rust) + Next.js 16 + React 19
 - **Audio Processing**: Rust (cpal, professional audio mixing)
 - **Transcription**: transcribe.cpp (GGUF on ggml) via the `transcribe-cpp` Rust bindings for ASR models, plus audio-capable LLMs (Gemma 4) through the bundled `llama-helper` sidecar (llama.cpp mtmd) — no external Ollama install
 - **App API Surface**: Tauri commands and events, not a separate FastAPI service
