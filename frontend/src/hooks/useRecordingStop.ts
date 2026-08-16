@@ -152,12 +152,6 @@ export function useRecordingStop(
       let elapsedTime = 0;
       let transcriptionComplete = false;
 
-      // Listen for transcription-complete event
-      const unlistenComplete = await listen('transcription-complete', () => {
-        console.log('Received transcription-complete event');
-        transcriptionComplete = true;
-      });
-
       // Poll for transcription status
       while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
         try {
@@ -193,17 +187,10 @@ export function useRecordingStop(
         }
       }
 
-      // Clean up listener
-      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
-      unlistenComplete();
-
       if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
         console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
-        // Wait longer for any late transcript segments (increased from 1s to 4s)
-        console.log('⏳ Waiting for late transcript segments...');
-        await new Promise(resolve => setTimeout(resolve, 4000));
       }
 
       // Final buffer flush: process ALL remaining transcripts regardless of timing
@@ -214,6 +201,9 @@ export function useRecordingStop(
         current_transcript_count: transcriptsRef.current.length
       });
       setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+      // Yield one macrotask so any transcript-update event already queued by the
+      // webview is delivered into the buffer before we flush it.
+      await new Promise(resolve => setTimeout(resolve, 0));
       flushBuffer();
       const flushEndTime = Date.now();
       console.log('✅ Final buffer flush completed', {
