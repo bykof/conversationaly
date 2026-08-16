@@ -396,6 +396,14 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
 7. **Audio Permissions**: Request permissions early. macOS requires both microphone AND screen recording for system audio.
 
+8. **No text injection into other applications without a verified caret anchor**: No injection code exists today. This is a rule for whoever builds it, not a description of current behavior.
+
+   - Never write a whole field. FluidVoice, the macOS dictation app studied for this, has Accessibility rungs that replace the target's entire `kAXValue`, and the target is sometimes picked by a hierarchy walk rather than by focus. The field it destroys need not be the one the user is typing in.
+   - Those destructive rungs are reached precisely when `kAXValue` / `kAXSelectedTextRange` are unreadable: Electron apps, web views, terminals. For a desktop dictation tool that is the majority case, not the tail.
+   - One occurrence is unbounded loss of someone else's document, and we leave no undo entry behind for them to recover it.
+   - A verified caret anchor — insert, then read back what landed and where — is a prerequisite that gates the feature. It is not a follow-up.
+   - Do not add `enigo`, `rdev`, or a CGEventTap. Synthesizing keystrokes gives no read-back, so it cannot satisfy the anchor requirement, and it needs a blanket Accessibility grant that turns every keystroke the user types into something the app can see. (`HANDOVER.md` §5 covers the same ground for as long as that file exists.)
+
 ## Repository-Specific Conventions
 
 - **Logging Format**: Rust logs should include enough module context to diagnose app behavior

@@ -30,7 +30,7 @@ export function PermissionsStep() {
     if (permissions.microphone === 'denied') {
       // Try to open system settings
       try {
-        await invoke('open_system_settings');
+        await invoke('open_system_settings', { preferencePane: 'Privacy_Microphone' });
       } catch {
         alert('Please enable microphone access in System Preferences > Security & Privacy > Microphone');
       }
@@ -62,7 +62,7 @@ export function PermissionsStep() {
     if (permissions.systemAudio === 'denied') {
       // Try to open system settings
       try {
-        await invoke('open_system_settings');
+        await invoke('open_system_settings', { preferencePane: 'Privacy_AudioCapture' });
       } catch {
         alert('Please enable Audio Capture in System Settings → Privacy & Security → Audio Capture');
       }
