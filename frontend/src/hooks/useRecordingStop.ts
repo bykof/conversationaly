@@ -152,12 +152,6 @@ export function useRecordingStop(
       let elapsedTime = 0;
       let transcriptionComplete = false;
 
-      // Listen for transcription-complete event
-      const unlistenComplete = await listen('transcription-complete', () => {
-        console.log('Received transcription-complete event');
-        transcriptionComplete = true;
-      });
-
       // Poll for transcription status
       while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
         try {
@@ -193,17 +187,10 @@ export function useRecordingStop(
         }
       }
 
-      // Clean up listener
-      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
-      unlistenComplete();
-
       if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
         console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
-        // Wait longer for any late transcript segments (increased from 1s to 4s)
-        console.log('⏳ Waiting for late transcript segments...');
-        await new Promise(resolve => setTimeout(resolve, 4000));
       }
 
       // Final buffer flush: process ALL remaining transcripts regardless of timing
@@ -214,19 +201,18 @@ export function useRecordingStop(
         current_transcript_count: transcriptsRef.current.length
       });
       setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
-      flushBuffer();
+      // Yield one macrotask so any transcript-update event already queued by the
+      // webview is delivered into the buffer before we flush it.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const flushedTranscripts = flushBuffer();
       const flushEndTime = Date.now();
       console.log('✅ Final buffer flush completed', {
         flush_duration: flushEndTime - flushStartTime,
         total_time_since_stop: flushEndTime - stopStartTime,
-        final_transcript_count: transcriptsRef.current.length
+        final_transcript_count: flushedTranscripts.length
       });
 
       // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
-
-      // Wait a bit more to ensure all transcript state updates have been processed
-      console.log('Waiting for transcript state updates to complete...');
-      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
@@ -235,8 +221,9 @@ export function useRecordingStop(
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
+        // The array flushBuffer just returned — authoritative without waiting
+        // for React to commit, which is what the old 500 ms sleep was for.
+        const freshTranscripts = [...flushedTranscripts];
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
@@ -332,14 +319,13 @@ export function useRecordingStop(
             duration: 10000,
           });
 
-          // Auto-navigate after a short delay with source parameter
-          setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            clearTranscripts()
+          // Navigate immediately with source parameter. The meeting is already
+          // in the database at this point, so there is nothing to wait for.
+          router.push(`/meeting-details?id=${meetingId}&source=recording`);
+          clearTranscripts()
 
-            // Reset to IDLE after navigation
-            setStatus(RecordingStatus.IDLE);
-          }, 2000);
+          // Reset to IDLE after navigation
+          setStatus(RecordingStatus.IDLE);
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
