@@ -319,14 +319,13 @@ export function useRecordingStop(
             duration: 10000,
           });
 
-          // Auto-navigate after a short delay with source parameter
-          setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            clearTranscripts()
+          // Navigate immediately with source parameter. The meeting is already
+          // in the database at this point, so there is nothing to wait for.
+          router.push(`/meeting-details?id=${meetingId}&source=recording`);
+          clearTranscripts()
 
-            // Reset to IDLE after navigation
-            setStatus(RecordingStatus.IDLE);
-          }, 2000);
+          // Reset to IDLE after navigation
+          setStatus(RecordingStatus.IDLE);
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
