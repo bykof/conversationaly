@@ -299,18 +299,45 @@ pub(crate) async fn transcribe_check_model_ready<R: Runtime>(
 }
 
 /// Ensure a model is loaded and ready before recording starts.
+///
+/// Emits `model-loading-started` / `-completed` / `-failed` around the load —
+/// the same three events `transcribe_load_model` uses, so the record button's
+/// "Loading model…" label works whichever route reaches the load. They fire
+/// only when a load actually happens: a built-in audio LLM and an
+/// already-resident model both come back `Ready` from the check above.
 #[command]
 pub async fn transcribe_validate_model_ready<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<String, String> {
-    match transcribe_check_model_ready(app.clone()).await? {
-        ModelReadiness::Ready(model) => Ok(model),
-        ModelReadiness::NeedsLoad(model) => {
-            engine()?
-                .load_model(&model)
-                .await
-                .map_err(|e| format!("Failed to load model '{}': {}", model, e))?;
+    let model = match transcribe_check_model_ready(app.clone()).await? {
+        ModelReadiness::Ready(model) => return Ok(model),
+        ModelReadiness::NeedsLoad(model) => model,
+    };
+
+    // Resolved before the "started" event so a missing engine cannot leave the
+    // button stuck on a load that never began.
+    let engine = engine()?;
+
+    let _ = app.emit(
+        "model-loading-started",
+        serde_json::json!({ "modelName": model }),
+    );
+
+    match engine.load_model(&model).await {
+        Ok(()) => {
+            let _ = app.emit(
+                "model-loading-completed",
+                serde_json::json!({ "modelName": model }),
+            );
             Ok(model)
+        }
+        Err(e) => {
+            let error = format!("Failed to load model '{}': {}", model, e);
+            let _ = app.emit(
+                "model-loading-failed",
+                serde_json::json!({ "modelName": model, "error": error }),
+            );
+            Err(error)
         }
     }
 }

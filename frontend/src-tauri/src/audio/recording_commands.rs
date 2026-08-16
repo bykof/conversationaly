@@ -79,6 +79,18 @@ fn emit_start_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
     );
 }
 
+/// Repaint the tray on the way out of a failed start, and pass the error
+/// through so call sites can write `return Err(fail_start(&app, msg))`.
+///
+/// The tray sets an intermediate, disabled "🔄 Starting Recording…" item the
+/// moment it hands off, and only a repaint clears it. Every early return here
+/// used to skip that, so one failed start left the tray stuck on it — with no
+/// way to start or stop a recording — until the app restarted.
+fn fail_start<R: Runtime>(app: &AppHandle<R>, error: String) -> String {
+    crate::tray::update_tray_menu(app);
+    error
+}
+
 /// Undo a start that already opened the microphone.
 ///
 /// Reachable only because the model load now runs *after* capture begins.
@@ -94,6 +106,19 @@ async fn abort_started_capture<R: Runtime>(app: &AppHandle<R>, error: &str) {
     }
     IS_RECORDING.store(false, Ordering::SeqCst);
     emit_start_error(app, error);
+    crate::tray::update_tray_menu(app);
+}
+
+/// One greppable line per start, at `info!` so it reaches the log file.
+///
+/// Every remaining latency decision in this area branches on these numbers, so
+/// they are logged together rather than scattered across the phases that
+/// produced them.
+fn log_start_timings(timings: super::recording_manager::StartTimings, validate_ms: u128, total_ms: u128) {
+    info!(
+        "record_start validate_ms={} pipeline_ms={} streams_ms={} total_ms={}",
+        validate_ms, timings.pipeline_ms, timings.streams_ms, total_ms
+    );
 }
 
 // ============================================================================
@@ -115,13 +140,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
+    let start_began = std::time::Instant::now();
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
     info!("🔍 IS_RECORDING state check: {}", current_recording_state);
     if current_recording_state {
-        return Err("Recording already in progress".to_string());
+        return Err(fail_start(&app, "Recording already in progress".to_string()));
     }
 
     // Pre-flight only: is the configured model resolvable and on disk? A missing
@@ -134,7 +160,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     {
         error!("Model check failed: {}", validation_error);
         emit_start_error(&app, &validation_error);
-        return Err(validation_error);
+        return Err(fail_start(&app, validation_error));
     }
     info!("✅ Transcription model check passed");
 
@@ -179,10 +205,10 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                         }
                         Err(default_err) => {
                             error!("❌ No microphone available (preferred and default both failed)");
-                            return Err(format!(
+                            return Err(fail_start(&app, format!(
                                 "No microphone device available. Preferred device '{}' not found, and default microphone unavailable: {}",
                                 pref_name, default_err
-                            ));
+                            )));
                         }
                     }
                 }
@@ -197,7 +223,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                 }
                 Err(e) => {
                     error!("❌ No default microphone available");
-                    return Err(format!("No microphone device available: {}", e));
+                    return Err(fail_start(&app, format!("No microphone device available: {}", e)));
                 }
             }
         }
@@ -268,7 +294,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     let transcription_receiver = manager
         .start_recording(microphone_device, system_device, auto_save)
         .await
-        .map_err(|e| format!("Failed to start recording: {}", e))?;
+        .map_err(|e| fail_start(&app, format!("Failed to start recording: {}", e)))?;
+    let capture_timings = manager.start_timings();
 
     // Store the manager globally to keep it alive
     {
@@ -289,6 +316,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // `transcription_receiver` (an UnboundedSender), so audio queues up instead
     // of being lost, and at RTF ~0.06 the decoder clears the backlog in a
     // fraction of the time it took to build.
+    let validate_began = std::time::Instant::now();
     if let Err(load_error) =
         crate::transcribe_engine::commands::transcribe_validate_model_ready(app.clone()).await
     {
@@ -296,7 +324,10 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         abort_started_capture(&app, &load_error).await;
         return Err(load_error);
     }
+    let validate_ms = validate_began.elapsed().as_millis();
     drop(engine_lifecycle_guard);
+
+    log_start_timings(capture_timings, validate_ms, start_began.elapsed().as_millis());
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
@@ -343,7 +374,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
         "workers": 3
-    })).map_err(|e| e.to_string())?;
+    })).map_err(|e| fail_start(&app, e.to_string()))?;
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
@@ -374,13 +405,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
+    let start_began = std::time::Instant::now();
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
     info!("🔍 IS_RECORDING state check: {}", current_recording_state);
     if current_recording_state {
-        return Err("Recording already in progress".to_string());
+        return Err(fail_start(&app, "Recording already in progress".to_string()));
     }
 
     // Pre-flight only — see the twin comment in
@@ -391,14 +423,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     {
         error!("Model check failed: {}", validation_error);
         emit_start_error(&app, &validation_error);
-        return Err(validation_error);
+        return Err(fail_start(&app, validation_error));
     }
     info!("✅ Transcription model check passed");
 
     // Parse devices
     let mic_device = if let Some(ref name) = mic_device_name {
         Some(Arc::new(parse_audio_device(name).map_err(|e| {
-            format!("Invalid microphone device '{}': {}", name, e)
+            fail_start(&app, format!("Invalid microphone device '{}': {}", name, e))
         })?))
     } else {
         None
@@ -406,7 +438,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     let system_device = if let Some(ref name) = system_device_name {
         Some(Arc::new(parse_audio_device(name).map_err(|e| {
-            format!("Invalid system device '{}': {}", name, e)
+            fail_start(&app, format!("Invalid system device '{}': {}", name, e))
         })?))
     } else {
         None
@@ -450,7 +482,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     let transcription_receiver = manager
         .start_recording(mic_device, system_device, auto_save)
         .await
-        .map_err(|e| format!("Failed to start recording: {}", e))?;
+        .map_err(|e| fail_start(&app, format!("Failed to start recording: {}", e)))?;
+    let capture_timings = manager.start_timings();
 
     // Store the manager globally to keep it alive
     {
@@ -465,6 +498,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Load the model only now that capture is live — see the twin comment in
     // `start_recording_with_meeting_name`.
+    let validate_began = std::time::Instant::now();
     if let Err(load_error) =
         crate::transcribe_engine::commands::transcribe_validate_model_ready(app.clone()).await
     {
@@ -472,7 +506,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         abort_started_capture(&app, &load_error).await;
         return Err(load_error);
     }
+    let validate_ms = validate_began.elapsed().as_millis();
     drop(engine_lifecycle_guard);
+
+    log_start_timings(capture_timings, validate_ms, start_began.elapsed().as_millis());
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
@@ -522,7 +559,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
         ],
         "workers": 3
-    })).map_err(|e| e.to_string())?;
+    })).map_err(|e| fail_start(&app, e.to_string()))?;
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
