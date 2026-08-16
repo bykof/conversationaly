@@ -101,7 +101,16 @@ pub fn start_transcription_task<R: Runtime>(
 
             if streaming {
                 match session.stream(&run_options, &StreamOptions::default()) {
-                    Ok(stream) => service::run(StreamingTranscriber::new(stream), sink, receiver),
+                    // Only this path opts into the lag warning. The segmented
+                    // adapter below already warns when its backlog cap starts
+                    // dropping audio; the streaming path has no cap, so nothing
+                    // otherwise tells a user that the transcript has quietly
+                    // drifted half a minute behind them.
+                    Ok(stream) => service::run(
+                        StreamingTranscriber::new(stream),
+                        sink.warn_when_behind(),
+                        receiver,
+                    ),
                     Err(e) => {
                         TauriSink::fatal(&app, &format!("Failed to begin transcription stream: {e}"))
                     }

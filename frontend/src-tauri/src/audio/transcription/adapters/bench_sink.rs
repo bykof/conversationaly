@@ -24,6 +24,14 @@ use std::time::{Duration, Instant};
 /// of the line is a trend over a meeting, not a running commentary.
 const LOG_EVERY: Duration = Duration::from_secs(15);
 
+/// How far behind the speaker the transcript has to fall before it stops being
+/// a latency figure and becomes something the user should be told about.
+///
+/// Twenty seconds is past the point where the text on screen is still useful
+/// for following the conversation, and comfortably past any normal decode
+/// latency, so it does not fire on a model that is merely unhurried.
+const LAG_WARN_MS: f64 = 20_000.0;
+
 /// Wraps a sink and reports how far behind real time the transcript is.
 pub struct BenchSink<S> {
     inner: S,
@@ -33,12 +41,52 @@ pub struct BenchSink<S> {
     started: Instant,
     commits: u64,
     last_log: Instant,
+    /// Whether this recording wants the user warned about lag at all. Off by
+    /// default: see [`BenchSink::warn_when_behind`].
+    lag_warning: bool,
+    /// Latched after the one warning, the same way `segmented.rs` latches its
+    /// backlog warning.
+    lag_warned: bool,
 }
 
 impl<S: TranscriptSink> BenchSink<S> {
     pub fn new(inner: S) -> Self {
         let started = Instant::now();
-        Self { inner, started, commits: 0, last_log: started }
+        Self {
+            inner,
+            started,
+            commits: 0,
+            last_log: started,
+            lag_warning: false,
+            lag_warned: false,
+        }
+    }
+
+    /// Also tell the user, once, if the transcript falls ~20s behind them.
+    ///
+    /// Opt-in rather than always-on because only the streaming path needs it.
+    /// The VAD + batch adapter already warns when its backlog cap starts
+    /// dropping audio, and one slow model producing two different toasts is one
+    /// too many. The streaming path has no such cap: it never drops anything,
+    /// it just arrives later and later, which is exactly the failure a user
+    /// cannot diagnose without being told.
+    pub fn warn_when_behind(mut self) -> Self {
+        self.lag_warning = true;
+        self
+    }
+
+    /// Whether this is the moment to hand out the "pick a faster model" advice.
+    ///
+    /// Once per recording: the condition holds for every subsequent commit once
+    /// it holds at all, and the point is to tell the user something they can
+    /// act on, not to bury the UI in identical toasts.
+    fn behind(&mut self, lag: f64) -> bool {
+        if self.lag_warning && !self.lag_warned && lag >= LAG_WARN_MS {
+            self.lag_warned = true;
+            true
+        } else {
+            false
+        }
     }
 
     /// Whether this commit gets a log line.
@@ -73,20 +121,33 @@ impl<S: TranscriptSink> TranscriptSink for BenchSink<S> {
     fn committed(&mut self, chunk: TranscriptChunk) {
         self.commits += 1;
         let now = Instant::now();
+        let elapsed = now.duration_since(self.started);
+        // Two float operations, unconditionally. What the throttle below guards
+        // is the formatting, which is the part that actually costs something.
+        let lag = lag_ms(elapsed, chunk.audio_end);
 
         if self.due(now) {
-            let elapsed = now.duration_since(self.started);
             info!(
-                "BENCH n={} t={:.1}s audio_end={:.1}s lag_ms={:.0} chars={}",
+                "BENCH n={} t={:.1}s audio_end={:.1}s lag_ms={lag:.0} chars={}",
                 self.commits,
                 elapsed.as_secs_f64(),
                 chunk.audio_end,
-                lag_ms(elapsed, chunk.audio_end),
                 chunk.text.chars().count(),
             );
         }
 
+        // The text first: the user should see the line before being told it
+        // arrived late.
         self.inner.committed(chunk);
+
+        if self.behind(lag) {
+            self.inner.warn(&format!(
+                "Live transcription is about {:.0}s behind what you are saying. Nothing is \
+                 being lost, but the text will keep arriving late — pick a faster model in \
+                 settings to close the gap.",
+                lag / 1000.0
+            ));
+        }
     }
 
     fn tentative(&mut self, text: &str) {
@@ -142,6 +203,62 @@ mod tests {
         // A decoder faster than real time reports negative lag rather than
         // clamping to zero, because "ahead" is a real state worth seeing.
         assert_eq!(lag_ms(Duration::from_secs(3), 5.0), -2_000.0);
+    }
+
+    /// Wind the session's start back so a chunk can be "late" without the test
+    /// waiting twenty real seconds for it.
+    fn started_seconds_ago<S: TranscriptSink>(bench: &mut BenchSink<S>, secs: u64) {
+        bench.started = bench
+            .started
+            .checked_sub(Duration::from_secs(secs))
+            .expect("the monotonic clock has been running for at least that long");
+    }
+
+    #[test]
+    fn falling_far_behind_warns_once_and_says_what_to_do_about_it() {
+        let inner = FakeSink::default();
+        let recorded = inner.0.clone();
+        let mut bench = BenchSink::new(inner).warn_when_behind();
+        // 30s of wall clock against text describing audio up to the 5s mark.
+        started_seconds_ago(&mut bench, 30);
+
+        bench.committed(chunk("late", 5.0));
+        bench.committed(chunk("later still", 6.0));
+
+        let log = recorded.lock().unwrap();
+        assert_eq!(log.committed, vec!["late", "later still"], "the text still arrives");
+        assert_eq!(log.warnings.len(), 1, "advice once per recording, not once per chunk");
+        assert!(
+            log.warnings[0].contains("faster model"),
+            "the warning has to say what to do: {}",
+            log.warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_transcript_that_keeps_up_is_never_warned_about() {
+        let inner = FakeSink::default();
+        let recorded = inner.0.clone();
+        let mut bench = BenchSink::new(inner).warn_when_behind();
+
+        bench.committed(chunk("on time", 0.0));
+
+        assert!(recorded.lock().unwrap().warnings.is_empty());
+    }
+
+    #[test]
+    fn the_segmented_paths_are_left_to_their_own_warning() {
+        // No `warn_when_behind`, so the decorator only measures. The VAD + batch
+        // adapter already tells the user when its backlog cap starts dropping
+        // audio, and two toasts about one slow model is one too many.
+        let inner = FakeSink::default();
+        let recorded = inner.0.clone();
+        let mut bench = BenchSink::new(inner);
+        started_seconds_ago(&mut bench, 30);
+
+        bench.committed(chunk("late", 5.0));
+
+        assert!(recorded.lock().unwrap().warnings.is_empty());
     }
 
     #[test]
