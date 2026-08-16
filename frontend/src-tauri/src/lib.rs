@@ -524,6 +524,7 @@ pub fn run() {
                     log::error!("Failed to initialize transcription engine on startup: {}", e);
                 }
             });
+            audio::common::spawn_engine_idle_unloader();
 
             // Initialize ModelManager for summary engine (async, non-blocking)
             let app_handle_for_model_manager = _app.handle().clone();
