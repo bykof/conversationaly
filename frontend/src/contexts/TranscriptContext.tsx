@@ -413,6 +413,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             duration: segment.duration,
           }));
 
+          transcriptsRef.current = formattedTranscripts;
           setTranscripts(formattedTranscripts);
           console.log('[Reload Sync] ✅ Transcript history synced successfully');
 
@@ -513,6 +514,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
+    transcriptsRef.current = [];
     setTranscripts([]);
     // Covers the stream dying without emitting its own clear.
     setPartialText('');
