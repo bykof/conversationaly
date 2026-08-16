@@ -9,12 +9,27 @@ import { listen } from '@tauri-apps/api/event';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { LiveIndicator } from '@/components/LiveIndicator';
+import type { StartPhase } from '@/hooks/useRecordingStart';
 import { cn } from '@/lib/utils';
+
+/**
+ * Pending-state copy. Every phase names itself in words, so the button stays
+ * readable with the spinner suppressed under `prefers-reduced-motion`.
+ */
+const START_PHASE_LABEL: Record<Exclude<StartPhase, 'idle'>, string> = {
+  'starting': 'Starting…',
+  'loading-model': 'Loading model…',
+  'waiting-for-previous': 'Waiting for the previous recording to finish…',
+};
 
 interface RecordingControlsProps {
   isRecording: boolean;
   onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
+  /** Owned by useRecordingStart — covers the button, sidebar and tray start paths. */
+  isStarting: boolean;
+  /** What that start is currently blocked on, for the button label. */
+  startPhase: StartPhase;
   onTranscriptReceived: (summary: SummaryResponse) => void;
   onTranscriptionError?: (message: string) => void;
   onStopInitiated?: () => void; // Called immediately when stop button is clicked
@@ -31,6 +46,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
   onRecordingStop,
   onRecordingStart,
+  isStarting,
+  startPhase,
   onTranscriptReceived,
   onTranscriptionError,
   onStopInitiated,
@@ -44,13 +61,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const isPaused = recordingState.isPaused;
 
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isPausing, setIsPausing] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
-  const [isValidatingModel, setIsValidatingModel] = useState(false);
   const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
 
@@ -68,7 +83,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, []);
 
   const handleStartRecording = useCallback(async () => {
-    if (isStarting || isValidatingModel) return;
+    if (isStarting) return;
     console.log('Starting recording...');
     console.log('Selected devices:', selectedDevices);
     console.log('Meeting name:', meetingName);
@@ -117,7 +132,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         });
       }
     }
-  }, [onRecordingStart, isStarting, isValidatingModel, selectedDevices, meetingName, isRecording]);
+  }, [onRecordingStart, isStarting, selectedDevices, meetingName, isRecording]);
 
   const stopRecordingAction = useCallback(async () => {
     console.log('Executing stop recording...');
@@ -316,7 +331,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, [onRecordingStop, onTranscriptionError]);
 
-  const busy = isStarting || isProcessing || isValidatingModel;
+  const busy = isStarting || isProcessing;
 
   return (
     <div className="flex w-full flex-col items-center gap-2">
@@ -362,17 +377,21 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               handleStartRecording();
             }}
             disabled={busy || isRecordingDisabled}
+            aria-busy={isStarting}
             className={cn(
-              'flex h-9 items-center gap-2 rounded-md px-3.5 text-base font-medium text-white',
+              'flex h-9 items-center gap-2 whitespace-nowrap rounded-md px-3.5 text-base font-medium text-white',
               'transition-colors duration-fast',
               'bg-danger hover:bg-danger-hover active:brightness-95',
               'disabled:pointer-events-none disabled:opacity-45'
             )}
           >
-            {isValidatingModel ? (
+            {isStarting && startPhase !== 'idle' ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                Checking model…
+                {/* Reduced motion must not remove information: the spinner goes
+                    away rather than freezing mid-rotation, and the phase word
+                    beside it carries the state on its own. */}
+                <Loader2 className="h-4 w-4 animate-spin motion-reduce:hidden" aria-hidden />
+                {START_PHASE_LABEL[startPhase]}
               </>
             ) : (
               <>
