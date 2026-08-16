@@ -623,6 +623,9 @@ pub fn run() {
             audio::recording_commands::attempt_device_reconnect,
             // Playback device detection (Bluetooth warning)
             audio::recording_commands::get_active_audio_output,
+            // Capture-start measurement, debug builds only (audio/dictation_probe.rs)
+            #[cfg(debug_assertions)]
+            audio::dictation_probe::dictation_probe,
             // Audio recovery commands (for transcript recovery feature)
             audio::incremental_saver::recover_audio_from_checkpoints,
             audio::incremental_saver::cleanup_checkpoints,

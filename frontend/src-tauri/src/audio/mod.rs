@@ -39,6 +39,11 @@ pub mod playback_monitor; // NEW: Playback device detection for BT warnings
 // Transcription module (provider abstraction, engine management, worker pool)
 pub mod transcription;
 
+// Capture-start measurement for the dictation question. Debug builds only — it
+// opens a microphone from a command and must never reach a release binary.
+#[cfg(debug_assertions)]
+pub mod dictation_probe;
+
 // Shared utilities for import and retranscription
 pub(crate) mod common;
 
