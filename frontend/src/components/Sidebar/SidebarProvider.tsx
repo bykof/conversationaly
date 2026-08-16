@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -87,7 +87,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   // Extract fetchMeetings as a reusable function
-  const fetchMeetings = React.useCallback(async () => {
+  const fetchMeetings = useCallback(async () => {
     if (serverAddress) {
       try {
         const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
@@ -127,9 +127,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   ];
 
 
-  const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
-  };
+  // Functional update so this stays referentially stable across renders; reading
+  // `isCollapsed` from the closure would put it in the dependency array and
+  // rebuild the context value on every collapse.
+  const toggleCollapse = useCallback(() => {
+    setIsCollapsed(prev => !prev);
+  }, []);
 
   // Update current meeting when on home page
   useEffect(() => {
@@ -145,7 +148,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   }, [meetings]);
 
   // Function to handle recording toggle from sidebar
-  const handleRecordingToggle = () => {
+  const handleRecordingToggle = useCallback(() => {
     if (!isRecording) {
       // Check if already on home page
       if (pathname === '/') {
@@ -161,10 +164,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
     }
     // The actual recording start/stop is handled in the Home component
-  };
+  }, [isRecording, pathname, router]);
 
   // Function to search through meeting transcripts
-  const searchTranscripts = async (query: string) => {
+  const searchTranscripts = useCallback(async (query: string) => {
     if (!query.trim()) {
       setSearchResults([]);
       return;
@@ -182,10 +185,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsSearching(false);
     }
-  };
+  }, []);
 
   // Summary polling management
-  const startSummaryPolling = React.useCallback((
+  const startSummaryPolling = useCallback((
     meetingId: string,
     processId: string,
     onUpdate: (result: any) => void
@@ -266,7 +269,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     setActiveSummaryPolls(prev => new Map(prev).set(meetingId, pollInterval));
   }, [activeSummaryPolls]);
 
-  const stopSummaryPolling = React.useCallback((meetingId: string) => {
+  const stopSummaryPolling = useCallback((meetingId: string) => {
     const pollInterval = activeSummaryPolls.get(meetingId);
     if (pollInterval) {
       console.log(`⏹️ Stopping polling for meeting ${meetingId}`);
@@ -289,31 +292,59 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
 
 
-  return (
-    <SidebarContext.Provider value={{
-      currentMeeting,
-      setCurrentMeeting,
-      sidebarItems,
-      isCollapsed,
-      toggleCollapse,
-      meetings,
-      setMeetings,
-      isMeetingActive,
-      setIsMeetingActive,
-      handleRecordingToggle,
-      searchTranscripts,
-      searchResults,
-      isSearching,
-      setServerAddress,
-      serverAddress,
-      transcriptServerAddress,
-      setTranscriptServerAddress,
-      activeSummaryPolls,
-      startSummaryPolling,
-      stopSummaryPolling,
-      refetchMeetings: fetchMeetings,
+  // Memoized so the provider re-rendering does not, by itself, invalidate every
+  // consumer. This provider subscribes to RecordingStateContext, which polls the
+  // backend on a timer, so it re-renders several times a second while a
+  // recording is in progress with nothing here changed.
+  //
+  // Every entry is either listed below or stable by construction: the five
+  // setters come from useState and the six handlers are useCallback-wrapped.
+  // Adding a field here means adding it to the dependency array — an omission
+  // hands consumers a stale value, which is a worse bug than the re-renders
+  // this avoids.
+  const value = useMemo<SidebarContextType>(() => ({
+    currentMeeting,
+    setCurrentMeeting,
+    sidebarItems,
+    isCollapsed,
+    toggleCollapse,
+    meetings,
+    setMeetings,
+    isMeetingActive,
+    setIsMeetingActive,
+    handleRecordingToggle,
+    searchTranscripts,
+    searchResults,
+    isSearching,
+    setServerAddress,
+    serverAddress,
+    transcriptServerAddress,
+    setTranscriptServerAddress,
+    activeSummaryPolls,
+    startSummaryPolling,
+    stopSummaryPolling,
+    refetchMeetings: fetchMeetings,
+  }), [
+    currentMeeting,
+    sidebarItems,
+    isCollapsed,
+    toggleCollapse,
+    meetings,
+    isMeetingActive,
+    handleRecordingToggle,
+    searchTranscripts,
+    searchResults,
+    isSearching,
+    serverAddress,
+    transcriptServerAddress,
+    activeSummaryPolls,
+    startSummaryPolling,
+    stopSummaryPolling,
+    fetchMeetings,
+  ]);
 
-    }}>
+  return (
+    <SidebarContext.Provider value={value}>
       {children}
     </SidebarContext.Provider>
   );

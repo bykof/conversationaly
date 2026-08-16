@@ -29,7 +29,6 @@ function MeetingDetailsContent() {
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
   const [hasCheckedAutoGen, setHasCheckedAutoGen] = useState<boolean>(false);
 
@@ -165,7 +164,6 @@ function MeetingDetailsContent() {
     setMeetingDetails(null);
     setMeetingSummary(null);
     setError(null);
-    setIsLoading(true);
     // Reset auto-generation state to allow new meeting to be checked
     setHasCheckedAutoGen(false);
     setShouldAutoGenerate(false);
@@ -187,7 +185,6 @@ function MeetingDetailsContent() {
     if (!meetingId || meetingId === 'intro-call') {
       console.warn('No valid meeting ID in URL - meetingId:', meetingId);
       setError("No meeting selected");
-      setIsLoading(false);
       return;
     }
 
@@ -196,7 +193,6 @@ function MeetingDetailsContent() {
     setMeetingDetails(null);
     setMeetingSummary(null);
     setError(null);
-    setIsLoading(true);
 
     const fetchMeetingSummary = async () => {
       try {
@@ -300,15 +296,11 @@ function MeetingDetailsContent() {
       }
     };
 
-    const loadData = async () => {
-      try {
-        await fetchMeetingSummary();
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadData();
+    // Deliberately not gating the render on this. The transcript is already in
+    // hand from metadata + the paginated first page; making it wait on an LLM
+    // round-trip is what kept a finished meeting behind a spinner.
+    // fetchMeetingSummary swallows its own errors, so this cannot reject.
+    void fetchMeetingSummary();
   }, [meetingId]);
 
   // Auto-generation check: runs when meeting is loaded with no summary
@@ -350,8 +342,10 @@ function MeetingDetailsContent() {
     );
   }
 
-  // Show loading spinner while initial data loads
-  if ((isLoading || isLoadingTranscripts) || !meetingDetails) {
+  // Spinner only until the transcript itself is available. The summary is not
+  // part of this gate — PageContent renders its own placeholder for
+  // summaryData === null and swaps it out when the fetch resolves.
+  if (isLoadingTranscripts || !meetingDetails) {
     return <div className="flex items-center justify-center h-screen">
       <LoaderIcon className="animate-spin size-6" />
     </div>;

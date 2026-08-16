@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -21,6 +22,20 @@ pub enum StreamManagerType {
     Standard(AudioStreamManager),
 }
 
+/// How long each phase of [`RecordingManager::start_recording`] took.
+///
+/// Monotonic (`Instant`), never wall clock — a clock step mid-start would
+/// otherwise produce a negative or wildly inflated figure. The caller stitches
+/// these into the one `record_start …` line that everything downstream reads.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StartTimings {
+    pub pipeline_ms: u128,
+    /// Microphone and system audio together: `AudioStreamManager::start_streams`
+    /// creates both behind one call, and its "at least one stream" guard means
+    /// it cannot be invoked once per device to separate them.
+    pub streams_ms: u128,
+}
+
 /// Simplified recording manager that coordinates all audio components
 pub struct RecordingManager {
     state: Arc<RecordingState>,
@@ -29,6 +44,7 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
+    start_timings: StartTimings,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -49,7 +65,13 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
+            start_timings: StartTimings::default(),
         }
+    }
+
+    /// Phase timings from the last [`Self::start_recording`].
+    pub fn start_timings(&self) -> StartTimings {
+        self.start_timings
     }
 
     // Remove app handle storage for now - will be passed directly when saving
@@ -106,6 +128,7 @@ impl RecordingManager {
         // Start the audio processing pipeline with FFmpeg adaptive mixer
         // Pipeline will: 1) Mix mic+system audio with adaptive buffering, 2) Send mixed to recording_sender,
         // 3) Apply VAD and send speech segments to transcription
+        let pipeline_started = Instant::now();
         self.pipeline_manager.start(
             self.state.clone(),
             transcription_sender,
@@ -117,13 +140,20 @@ impl RecordingManager {
             sys_name,
             sys_kind,
         )?;
+        self.start_timings.pipeline_ms = pipeline_started.elapsed().as_millis();
 
-        // Give the pipeline a moment to fully initialize before starting streams
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // There used to be a 50ms sleep here, "to give the pipeline a moment to
+        // fully initialize". It never gave it anything: `pipeline_manager.start`
+        // creates the channel and calls `state.set_audio_sender` synchronously,
+        // before it returns, so the "Audio pipeline not ready" branch the sleep
+        // was guarding against is unreachable by the time we get here. It was
+        // 50ms of the meeting, every meeting.
 
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
         // Pipeline handles mixing and distribution to both recording and transcription
+        let streams_started = Instant::now();
         self.stream_manager.start_streams(microphone_device.clone(), system_device.clone()).await?;
+        self.start_timings.streams_ms = streams_started.elapsed().as_millis();
 
         // Start device monitoring to detect disconnects
         if let Some(ref mut monitor) = self.device_monitor {

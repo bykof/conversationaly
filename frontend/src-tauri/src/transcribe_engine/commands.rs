@@ -54,6 +54,11 @@ fn engine() -> Result<Arc<TranscribeEngine>, String> {
 
 #[command]
 pub async fn transcribe_init() -> Result<(), String> {
+    // The shared entry point of both batch engine-init paths
+    // (`import::get_or_init_transcribe` and its retranscription twin), so a
+    // batch job starting resets the idle unloader's clock before it loads.
+    crate::audio::common::touch_engine_idle().await;
+
     let mut guard = TRANSCRIBE_ENGINE.lock().unwrap();
     if guard.is_some() {
         return Ok(());
@@ -195,12 +200,26 @@ pub async fn transcribe_delete_corrupted_model(model_name: String) -> Result<(),
         .map_err(|e| format!("Failed to delete model: {}", e))
 }
 
-/// Ensure a model is loaded and ready before recording starts. Loads the
-/// configured model, falling back to any downloaded catalog model.
-#[command]
-pub async fn transcribe_validate_model_ready<R: Runtime>(
+/// What the pre-flight in [`transcribe_check_model_ready`] found.
+pub(crate) enum ModelReadiness {
+    /// Nothing left to load — either the provider is a built-in audio LLM,
+    /// which has no transcribe.cpp model at all, or the configured model is
+    /// already resident.
+    Ready(String),
+    /// Downloaded and resolvable, but the weights are not in memory yet.
+    NeedsLoad(String),
+}
+
+/// Resolve the configured transcription model and prove its files are on disk,
+/// loading nothing.
+///
+/// Split out of [`transcribe_validate_model_ready`] so recording start can run
+/// the cheap half — "is it downloaded?", the failure users actually hit — as a
+/// pre-flight before the microphone opens, and pay for the load afterwards,
+/// with audio already buffering behind it.
+pub(crate) async fn transcribe_check_model_ready<R: Runtime>(
     app: AppHandle<R>,
-) -> Result<String, String> {
+) -> Result<ModelReadiness, String> {
     let stored =
         crate::api::api::api_get_transcript_config(app.clone(), app.state(), None).await;
 
@@ -238,7 +257,7 @@ pub async fn transcribe_validate_model_ready<R: Runtime>(
                     ));
                 }
             }
-            return Ok(model);
+            return Ok(ModelReadiness::Ready(model));
         }
     }
 
@@ -253,7 +272,7 @@ pub async fn transcribe_validate_model_ready<R: Runtime>(
     if engine.get_current_model().await.as_deref() == Some(configured.as_str())
         && engine.is_model_loaded().await
     {
-        return Ok(configured);
+        return Ok(ModelReadiness::Ready(configured));
     }
 
     let models = engine
@@ -276,11 +295,107 @@ pub async fn transcribe_validate_model_ready<R: Runtime>(
             )
         })?;
 
-    engine
-        .load_model(&target.name)
-        .await
-        .map_err(|e| format!("Failed to load model '{}': {}", target.name, e))?;
-    Ok(target.name.clone())
+    Ok(ModelReadiness::NeedsLoad(target.name.clone()))
+}
+
+/// Ensure a model is loaded and ready before recording starts.
+///
+/// Emits `model-loading-started` / `-completed` / `-failed` around the load —
+/// the same three events `transcribe_load_model` uses, so the record button's
+/// "Loading model…" label works whichever route reaches the load. They fire
+/// only when a load actually happens: a built-in audio LLM and an
+/// already-resident model both come back `Ready` from the check above.
+#[command]
+pub async fn transcribe_validate_model_ready<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<String, String> {
+    let model = match transcribe_check_model_ready(app.clone()).await? {
+        ModelReadiness::Ready(model) => return Ok(model),
+        ModelReadiness::NeedsLoad(model) => model,
+    };
+
+    // Resolved before the "started" event so a missing engine cannot leave the
+    // button stuck on a load that never began.
+    let engine = engine()?;
+
+    let _ = app.emit(
+        "model-loading-started",
+        serde_json::json!({ "modelName": model }),
+    );
+
+    match engine.load_model(&model).await {
+        Ok(()) => {
+            let _ = app.emit(
+                "model-loading-completed",
+                serde_json::json!({ "modelName": model }),
+            );
+            Ok(model)
+        }
+        Err(e) => {
+            let error = format!("Failed to load model '{}': {}", model, e);
+            let _ = app.emit(
+                "model-loading-failed",
+                serde_json::json!({ "modelName": model, "error": error }),
+            );
+            Err(error)
+        }
+    }
+}
+
+/// Load the configured transcription model ahead of anyone pressing record.
+///
+/// Called on the call detector's intent edge, where the load overlaps the
+/// seconds the nudge is already on screen rather than the seconds after Start.
+///
+/// Silent by construction: every failure is logged and dropped, because a
+/// preload that did not happen is not a thing to tell the user about. Recording
+/// start runs the same check and reports it there, where they are waiting.
+pub(crate) async fn preload_configured_model<R: Runtime>(app: AppHandle<R>) {
+    // Deliberately the same read as `transcribe_validate_model_ready`, not
+    // `common::configured_local_model` — that one substitutes the default
+    // catalog model when the provider is the built-in audio LLM, which here
+    // would mean loading 716 MB for a user who never decodes with it.
+    let model = match transcribe_check_model_ready(app).await {
+        Ok(ModelReadiness::NeedsLoad(model)) => model,
+        Ok(ModelReadiness::Ready(model)) => {
+            log::debug!("Transcription preload: '{}' needs no load", model);
+            return;
+        }
+        Err(e) => {
+            log::info!("Transcription preload skipped: {}", e);
+            return;
+        }
+    };
+
+    let engine = match engine() {
+        Ok(engine) => engine,
+        Err(e) => {
+            log::info!("Transcription preload skipped: {}", e);
+            return;
+        }
+    };
+
+    let _engine_lifecycle_guard = crate::audio::common::acquire_engine_lifecycle_lock().await;
+
+    // Re-check under the lock. The user may have pressed record while we waited
+    // for it, and recording start does its own load; a second one here would
+    // fight it for the single in-flight compute transcribe.cpp allows.
+    if crate::audio::recording_commands::is_recording_now() {
+        return;
+    }
+    if engine.get_current_model().await.as_deref() == Some(model.as_str())
+        && engine.is_model_loaded().await
+    {
+        return;
+    }
+
+    match engine.load_model(&model).await {
+        Ok(()) => {
+            log::info!("Preloaded transcription model '{}' ahead of recording", model);
+            crate::audio::common::touch_engine_idle().await;
+        }
+        Err(e) => log::warn!("Transcription preload of '{}' failed: {}", model, e),
+    }
 }
 
 /// Reveal the models directory in the OS file manager.

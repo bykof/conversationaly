@@ -207,6 +207,24 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
             if crate::audio::recording_commands::is_recording().await {
                 continue;
             }
+
+            // Warm the transcription model on the intent edge.
+            //
+            // This is the earliest honest signal that a recording is about to
+            // start, and the load overlaps the seconds the nudge is on screen
+            // instead of the seconds after the user presses record. It sits
+            // above the nudge gate on purpose: the intent is just as real for
+            // someone who turned the nudge off.
+            //
+            // It also means the app never reads 716 MB for a user who opened it
+            // to look at yesterday's summary. Windows and Linux trigger on a
+            // process-launch edge, which fires earlier than the macOS mic-busy
+            // edge — strictly more warming time, not less.
+            let app_for_warm = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::transcribe_engine::commands::preload_configured_model(app_for_warm).await;
+            });
+
             if !nudge_enabled(&app).await {
                 continue;
             }

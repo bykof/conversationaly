@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { recordingService } from '@/services/recordingService';
 
 /**
@@ -31,9 +32,35 @@ interface RecordingState {
   recordingDuration: number | null;  // Total duration including pauses
   activeDuration: number | null;     // Active recording time (excluding pauses)
 
+  /**
+   * Has the microphone delivered a single frame this recording?
+   *
+   * An elapsed timer keeps ticking whether or not the headset disconnected, the
+   * OS switched inputs, or another app took the device — this is the one bit
+   * that does not. Narrow on purpose: it catches "opened but delivering
+   * nothing", not a muted-but-live mic (the level meter covers that) and not a
+   * system-audio-only capture.
+   */
+  captureArmed: boolean;
+
   // NEW: Lifecycle status
   status: RecordingStatus;
   statusMessage?: string;  // Optional message for current status
+}
+
+/**
+ * `get_recording_state` gained `mic_frames`; the shared `RecordingState` type in
+ * services/recordingService.ts has not been widened for it yet, so it is read
+ * off the response here rather than papered over with `any`.
+ */
+type BackendRecordingState = Awaited<ReturnType<typeof recordingService.getRecordingState>> & {
+  mic_frames?: number;
+};
+
+/** Payload of the backend's 100ms `mic-level` event. */
+interface MicLevelPayload {
+  rms: number;
+  armed: boolean;
 }
 
 interface RecordingStateContextType extends RecordingState {
@@ -63,6 +90,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isActive: false,
     recordingDuration: null,
     activeDuration: null,
+    captureArmed: false,
     status: RecordingStatus.IDLE,  // NEW: Initialize with IDLE status
     statusMessage: undefined,       // NEW: No message initially
   });
@@ -86,7 +114,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    */
   const syncWithBackend = async () => {
     try {
-      const backendState = await recordingService.getRecordingState();
+      const backendState: BackendRecordingState = await recordingService.getRecordingState();
 
       setState(prev => ({
         ...prev,
@@ -95,6 +123,9 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         isActive: backendState.is_active,
         recordingDuration: backendState.recording_duration,
         activeDuration: backendState.active_duration,
+        // A reload mid-meeting has to land on the truth too, not on "Waiting
+        // for audio" for a recording that has been capturing for forty minutes.
+        captureArmed: (backendState.mic_frames ?? 0) > 0,
       }));
 
       console.log('[RecordingStateContext] Synced with backend:', backendState);
@@ -150,6 +181,27 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         });
         unsubscribers.push(unlistenStarted);
 
+        // The arming gate's fast channel. The 500ms poll below also carries
+        // `mic_frames`, but it only starts once `recording-started` fires —
+        // which is after the model load — and capture is live throughout that
+        // load. This listener is what makes the gate honest during it.
+        //
+        // Latches on and is cleared only by `recording-stopped`. Within one
+        // recording the underlying fact is monotone — the mic either has
+        // delivered a frame or has not — and the event stream is not: teardown
+        // emits a final zeroed payload to park the meter, and lowering the flag
+        // on that would drop the transcript pane back to "Waiting for audio"
+        // for the length of the decoder's drain.
+        //
+        // Fires ten times a second, so it must not re-render the whole tree on
+        // every tick: returning `prev` unchanged makes React bail out, leaving
+        // exactly one render, at the moment the mic first delivers.
+        const unlistenMicLevel = await listen<MicLevelPayload>('mic-level', (event) => {
+          if (!event.payload.armed) return;
+          setState(prev => (prev.captureArmed ? prev : { ...prev, captureArmed: true }));
+        });
+        unsubscribers.push(unlistenMicLevel);
+
         // Recording stopped
         const unlistenStopped = await recordingService.onRecordingStopped((payload) => {
           console.log('[RecordingStateContext] Recording stopped event:', payload);
@@ -173,6 +225,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               isActive: false,
               recordingDuration: null,
               activeDuration: null,
+              captureArmed: false,
             };
           });
           stopPolling();

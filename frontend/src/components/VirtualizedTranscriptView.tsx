@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
+import { useRef, useReducer, startTransition, useEffect, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
-import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
+import { useRecordingState } from "@/contexts/RecordingStateContext";
 import { TranscriptSegmentData } from "@/types";
 import { Loader2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,8 +22,6 @@ export interface VirtualizedTranscriptViewProps {
     isProcessing?: boolean;
     /** Whether stopping */
     isStopping?: boolean;
-    /** Enable streaming effect for latest segment */
-    enableStreaming?: boolean;
     /** Uncommitted live text from a streaming model; shown dimmed below the segments */
     partialText?: string;
     /** Show confidence indicators */
@@ -71,14 +69,12 @@ const TranscriptSegment = memo(function TranscriptSegment({
     timestamp,
     text,
     confidence,
-    isStreaming,
     showConfidence,
 }: {
     id: string;
     timestamp: number;
     text: string;
     confidence?: number;
-    isStreaming: boolean;
     showConfidence: boolean;
 }) {
     const isSilence = text.trim() === '';
@@ -108,11 +104,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
             <p
                 className={cn(
                     'min-w-0 flex-1 text-md leading-relaxed',
-                    isSilence ? 'italic text-ink-faint' : 'text-ink',
-                    // Tentative text from the streaming decoder is not committed
-                    // yet and may still be rewritten — shown dimmer so the user
-                    // knows not to trust it verbatim.
-                    isStreaming && 'text-ink-muted'
+                    isSilence ? 'italic text-ink-faint' : 'text-ink'
                 )}
             >
                 {displayText}
@@ -133,7 +125,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     isPaused = false,
     isProcessing = false,
     isStopping = false,
-    enableStreaming = false,
     partialText = '',
     showConfidence = true,
     disableAutoScroll = false,
@@ -143,6 +134,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     loadedCount = 0,
     onLoadMore,
 }) => {
+    // Has the microphone actually delivered a frame yet? Until it has, this
+    // pane must not claim to be listening.
+    const { captureArmed } = useRecordingState();
+
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -182,13 +177,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         disableAutoScroll,
         liveText: partialText,
     });
-
-    // Streaming text effect hook (typewriter animation for new transcripts)
-    const { streamingSegmentId, getDisplayText } = useTranscriptStreaming(
-        segments,
-        isRecording,
-        enableStreaming
-    );
 
     // Infinite scroll: IntersectionObserver to trigger loading more
     useEffect(() => {
@@ -287,20 +275,34 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 <div className="flex min-h-[55vh] flex-col items-center justify-center px-6 text-center animate-fade-in">
                     {isRecording ? (
                         <>
+                            {/* Static until the microphone has actually handed
+                                over a frame. The pulse means "live", and a
+                                pulsing dot above the words "Waiting for audio"
+                                would contradict them. */}
                             <span
                                 aria-hidden
                                 className={cn(
                                     'mb-3 h-2.5 w-2.5 rounded-full',
-                                    isPaused ? 'bg-warn' : 'bg-danger animate-live'
+                                    isPaused
+                                        ? 'bg-warn'
+                                        : captureArmed
+                                          ? 'bg-danger animate-live'
+                                          : 'bg-ink-faint'
                                 )}
                             />
                             <p className="text-md font-medium text-ink">
-                                {isPaused ? 'Recording paused' : 'Listening'}
+                                {isPaused
+                                    ? 'Recording paused'
+                                    : captureArmed
+                                      ? 'Listening'
+                                      : 'Waiting for audio'}
                             </p>
                             <p className="mt-1 max-w-[34ch] text-base leading-relaxed text-ink-muted">
                                 {isPaused
                                     ? 'Resume from the transport below to keep capturing.'
-                                    : 'Speech appears here a few seconds after it is spoken.'}
+                                    : captureArmed
+                                      ? 'Speech appears here a few seconds after it is spoken.'
+                                      : 'The microphone is open but has not sent any audio yet. Bluetooth headsets can take a second or two.'}
                             </p>
                         </>
                     ) : (
@@ -328,7 +330,6 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                     >
                         {virtualizer.getVirtualItems().map((virtualRow) => {
                             const segment = segments[virtualRow.index];
-                            const isStreaming = streamingSegmentId === segment.id;
 
                             return (
                                 <div
@@ -346,9 +347,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                     <TranscriptSegment
                                         id={segment.id}
                                         timestamp={segment.timestamp}
-                                        text={getDisplayText(segment)}
+                                        text={segment.text}
                                         confidence={segment.confidence}
-                                        isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                     />
                                 </div>
@@ -385,9 +385,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 <TranscriptSegment
                                     id={segment.id}
                                     timestamp={segment.timestamp}
-                                    text={getDisplayText(segment)}
+                                    text={segment.text}
                                     confidence={segment.confidence}
-                                    isStreaming={streamingSegmentId === segment.id}
                                     showConfidence={showConfidence}
                                 />
                             </div>

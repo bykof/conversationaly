@@ -33,6 +33,7 @@ struct AudioMixerRingBuffer {
     mic_pad: u64,
     sys_pad: u64,
     windows: u64,
+    last_rate_log: std::time::Instant,
     // Last time each stream delivered anything. A stream that is still
     // delivering must never be zero-padded (see can_mix); one that has gone
     // quiet must never stall the mix.
@@ -54,6 +55,18 @@ const MIX_WINDOW_MS: f32 = 50.0;
 /// tying it to the window size meant shrinking the window also shrank the
 /// jitter headroom.
 const MAX_BUFFER_MS: f32 = 2_000.0;
+
+/// How often the two periodic health lines (mix rates, capture health) are
+/// allowed to reach the log.
+///
+/// These were count-gated — every 8th mix window and every 200th capture
+/// callback — which at a 50ms window and typical buffer sizes is ~2.5 lines a
+/// second, about 9,000 lines and 1.8 MB per meeting-hour. That is enough to
+/// rotate a 4 MB log file out from under the model-load and error lines anyone
+/// would actually be reading it for. A time gate makes the volume independent
+/// of window size and device buffer size, which is what the counts were
+/// standing in for in the first place.
+const HEALTH_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl AudioMixerRingBuffer {
     fn new(sample_rate: u32) -> Self {
@@ -77,6 +90,7 @@ impl AudioMixerRingBuffer {
             mic_pad: 0,
             sys_pad: 0,
             windows: 0,
+            last_rate_log: std::time::Instant::now(),
             mic_last: None,
             sys_last: None,
         }
@@ -245,7 +259,8 @@ impl AudioMixerRingBuffer {
         };
 
         self.windows += 1;
-        if self.windows % 8 == 0 {
+        if self.last_rate_log.elapsed() >= HEALTH_LOG_INTERVAL {
+            self.last_rate_log = std::time::Instant::now();
             self.log_rates();
         }
 
@@ -335,6 +350,14 @@ pub struct AudioCapture {
     callbacks: Arc<std::sync::atomic::AtomicU64>,
     raw_frames: Arc<std::sync::atomic::AtomicU64>,
     busy_micros: Arc<std::sync::atomic::AtomicU64>,
+    /// When `log_capture_health` last ran, as milliseconds since `started`.
+    ///
+    /// An atomic and not a Mutex<Instant> on purpose: this is read on every
+    /// realtime capture callback, which has one buffer period (~7-20ms) to
+    /// finish, and a lock there is exactly how you get CoreAudio to drop input
+    /// buffers. Offset-from-`started` rather than a wall clock so a clock
+    /// adjustment mid-meeting cannot turn the gate off or spam it.
+    last_health_log_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Adds this callback's runtime to the total on every exit path.
@@ -514,6 +537,7 @@ impl AudioCapture {
             callbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             raw_frames: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             busy_micros: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_health_log_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -556,10 +580,35 @@ impl AudioCapture {
         }
 
         use std::sync::atomic::Ordering::Relaxed;
-        let _busy = BusyTimer { start: std::time::Instant::now(), total: &self.busy_micros };
-        self.raw_frames
-            .fetch_add((data.len() / self.channels.max(1) as usize) as u64, Relaxed);
-        if self.callbacks.fetch_add(1, Relaxed) % 200 == 199 {
+        let now = std::time::Instant::now();
+        let _busy = BusyTimer { start: now, total: &self.busy_micros };
+        let frames = (data.len() / self.channels.max(1) as usize) as u64;
+        self.raw_frames.fetch_add(frames, Relaxed);
+        // Same count, shared with the UI rather than the log line: a non-zero
+        // `mic_frames` is what lets the transcript pane say "Listening" instead
+        // of "Waiting for audio". Microphone only — a mic that opened and
+        // delivers nothing is the failure being watched for, and system audio
+        // arriving would otherwise mask it.
+        if matches!(self.device_type, DeviceType::Microphone) {
+            self.state.note_frames(frames);
+        }
+        self.callbacks.fetch_add(1, Relaxed);
+
+        // The counters above stay unconditional — three atomics, and the health
+        // line is only meaningful if they count every callback. Only the log
+        // itself is gated, and on elapsed time rather than a callback count:
+        // "every 200th callback" is a few lines a second at a 7-20ms buffer.
+        // compare_exchange rather than a plain store so that clones of this
+        // capture sharing the counter emit one line between them, and the
+        // losing callback does no formatting work at all.
+        let elapsed_ms = now.duration_since(self.started).as_millis() as u64;
+        let last = self.last_health_log_ms.load(Relaxed);
+        if elapsed_ms.saturating_sub(last) >= HEALTH_LOG_INTERVAL.as_millis() as u64
+            && self
+                .last_health_log_ms
+                .compare_exchange(last, elapsed_ms, Relaxed, Relaxed)
+                .is_ok()
+        {
             self.log_capture_health();
         }
 
@@ -569,6 +618,28 @@ impl AudioCapture {
         } else {
             data.to_vec()
         };
+
+        // The level meter's tap, and deliberately the *raw* signal: after the
+        // downmix, but ahead of the resampler, the high-pass, RNNoise and the
+        // R128 normalizer. Normalisation targets -23 LUFS, so it will lift a
+        // dead stream's noise floor into something that looks like a voice —
+        // a post-processed tap keeps the bar moving after the microphone has
+        // died, which is the exact failure this meter exists to catch.
+        //
+        // One relaxed store per callback and no branch on chunk count: this is
+        // the hot audio callback, so no lock, no allocation, no logging.
+        if matches!(self.device_type, DeviceType::Microphone) {
+            if self.state.is_paused() {
+                // `send_audio_chunk` discards everything that arrives while
+                // paused, so a bar still tracking the room here would be
+                // claiming capture that is not happening.
+                self.state.set_mic_level(0.0);
+            } else if !mono_data.is_empty() {
+                let sum_sq: f32 = mono_data.iter().map(|&x| x * x).sum();
+                self.state
+                    .set_mic_level((sum_sq / mono_data.len() as f32).sqrt());
+            }
+        }
 
         // CRITICAL FIX: Resample to 48kHz if device uses different sample rate
         // This fixes Bluetooth devices (like Sony WH-1000XM4) that report 16kHz or 44.1kHz

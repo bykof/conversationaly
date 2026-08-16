@@ -1,7 +1,6 @@
 "use client";
 
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { PaneDivider } from '@/components/PaneDivider';
@@ -96,7 +95,6 @@ export function TranscriptPanel({
           isPaused={false}
           isProcessing={false}
           isStopping={false}
-          enableStreaming={false}
           showConfidence={true}
           disableAutoScroll={disableAutoScroll}
           hasMore={hasMore}

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -124,6 +124,16 @@ pub struct RecordingState {
     // Pause time tracking
     pause_start: Mutex<Option<Instant>>,
     total_pause_duration: Mutex<std::time::Duration>,
+
+    // Capture truth. Both are written from the realtime microphone callback and
+    // read by the `mic-level` emitter and `get_recording_state`, so both are
+    // plain relaxed atomics: no lock is allowed in that callback.
+    //
+    // RMS is stored as thousandths of full scale because std has no float
+    // atomic, and a mutex here would be exactly the thing that makes CoreAudio
+    // drop input buffers.
+    mic_rms_milli: AtomicU32,
+    mic_frames: AtomicU64,
 }
 
 impl RecordingState {
@@ -145,6 +155,8 @@ impl RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            mic_rms_milli: AtomicU32::new(0),
+            mic_frames: AtomicU64::new(0),
         })
     }
 
@@ -155,6 +167,12 @@ impl RecordingState {
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
         *self.last_error.lock().unwrap() = None;
+        // Both must be zero before the streams open, or the second recording of
+        // a session starts already "armed" and the arming gate says nothing.
+        // This runs ahead of `stream_manager.start_streams`, so no callback can
+        // have counted a frame yet.
+        self.mic_rms_milli.store(0, Ordering::Relaxed);
+        self.mic_frames.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -171,6 +189,10 @@ impl RecordingState {
         *self.microphone_device.lock().unwrap() = None;
         *self.system_device.lock().unwrap() = None;
         *self.disconnected_device.lock().unwrap() = None;
+        // The mic is shut; leaving the last RMS behind would freeze the meter at
+        // whatever was being said when Stop was pressed. Frame count is left
+        // alone — it is a fact about the recording that just happened.
+        self.mic_rms_milli.store(0, Ordering::Relaxed);
         log::info!("Recording stopped, device references cleared");
     }
 
@@ -217,6 +239,46 @@ impl RecordingState {
 
     pub fn is_active(&self) -> bool {
         self.is_recording() && !self.is_paused()
+    }
+
+    // ------------------------------------------------------------------
+    // Capture truth
+    //
+    // The pair below answers two different questions. `mic_level` is "is there
+    // signal right now", which catches a live-but-muted microphone. `frames_captured`
+    // is "has the device ever handed us a sample", which catches a microphone
+    // that opened and then delivered nothing at all — the failure an elapsed
+    // timer happily hides for the length of a meeting.
+    // ------------------------------------------------------------------
+
+    /// Record the microphone's raw RMS, 0..1 of full scale.
+    ///
+    /// Called from the realtime capture callback: one relaxed store, no lock,
+    /// no allocation, no formatting.
+    pub fn set_mic_level(&self, rms: f32) {
+        let milli = if rms.is_finite() {
+            (rms.max(0.0) * 1000.0).min(u32::MAX as f32) as u32
+        } else {
+            0
+        };
+        self.mic_rms_milli.store(milli, Ordering::Relaxed);
+    }
+
+    /// Most recent microphone RMS, 0..1 of full scale.
+    pub fn mic_level(&self) -> f32 {
+        self.mic_rms_milli.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    /// Count frames the microphone actually delivered. Relaxed for the same
+    /// reason as `set_mic_level`: this is the audio callback.
+    pub fn note_frames(&self, frames: u64) {
+        self.mic_frames.fetch_add(frames, Ordering::Relaxed);
+    }
+
+    /// Microphone frames delivered since this recording started. Zero means the
+    /// device opened but is handing us nothing.
+    pub fn frames_captured(&self) -> u64 {
+        self.mic_frames.load(Ordering::Relaxed)
     }
 
     // Reconnection state management
@@ -408,6 +470,8 @@ impl RecordingState {
         *self.total_pause_duration.lock().unwrap() = std::time::Duration::ZERO;
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
+        self.mic_rms_milli.store(0, Ordering::Relaxed);
+        self.mic_frames.store(0, Ordering::Relaxed);
 
         // Clear buffer pool to free memory
         self.buffer_pool.clear();
@@ -433,6 +497,8 @@ impl Default for RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            mic_rms_milli: AtomicU32::new(0),
+            mic_frames: AtomicU64::new(0),
         }
     }
 }
