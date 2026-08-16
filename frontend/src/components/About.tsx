@@ -5,6 +5,7 @@ import { UpdateDialog } from './UpdateDialog';
 import { updateService, UpdateInfo } from '@/services/updateService';
 import { Button } from './ui/button';
 import { Mark, Wordmark } from './Logo';
+import { ConsoleToggle } from './ConsoleToggle';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -84,6 +85,12 @@ export function About() {
         {updateInfo?.available && (
           <span className="text-sm text-brand">v{updateInfo.version} available</span>
         )}
+      </div>
+
+      {/* Diagnostics live here because this is the tab someone opens to file a
+          bug -- version above, the log file to attach right below it. */}
+      <div className="mt-6 border-t border-ink-faint/15 pt-5">
+        <ConsoleToggle />
       </div>
 
       {/* Upstream attribution. Conversationaly is a fork of Meetily; the credit

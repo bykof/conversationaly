@@ -30,19 +30,6 @@ export function ConsoleToggle() {
     }
   };
 
-  const handleToggleConsole = async () => {
-    setIsLoading(true);
-    try {
-      const result = await invoke('toggle_console');
-      console.log('Console toggle result:', result);
-      setConsoleVisible(!consoleVisible);
-    } catch (error) {
-      console.error('Failed to toggle console:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleShowConsole = async () => {
     setIsLoading(true);
     try {
@@ -97,14 +84,6 @@ export function ConsoleToggle() {
         />
       </div>
       <div className="flex space-x-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleToggleConsole}
-          disabled={isLoading}
-        >
-          Toggle Console
-        </Button>
         <Button
           variant="outline"
           size="sm"
