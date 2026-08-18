@@ -9,6 +9,9 @@
 Records your meetings, transcribes them live, and writes the summary — on your machine, with no account and no cloud round-trip unless you deliberately configure one.
 
 </p>
+
+<img src="docs/imgs/meeting_transcription_summary.png" alt="Conversationaly showing a meeting transcript beside its generated summary" width="100%">
+
 </div>
 
 <details>
@@ -44,6 +47,11 @@ It is a fork of [Meetily](https://github.com/Zackriya-Solutions/meeting-minutes)
 - **Summary templates** — pick or write the structure your summaries follow, and set the summary language independently of the spoken one.
 - **GPU acceleration** — Metal on Apple Silicon, CUDA (NVIDIA), Vulkan (AMD/Intel), ROCm (AMD on Linux).
 - **Local storage** — meetings, transcripts, and models live in a SQLite database and a model directory on your disk.
+
+<p align="center">
+  <img src="docs/imgs/transcription_settings.png" alt="Transcription settings listing downloadable local models with quality, WER, speed and size" width="49%">
+  <img src="docs/imgs/summary_models.png" alt="Summary settings listing the built-in Gemma 4 and Qwen 3.5 models" width="49%">
+</p>
 
 ## Installation
 
@@ -82,6 +90,8 @@ On first launch, onboarding downloads one transcription model and one Gemma 4 ti
 1. Microphone and system audio are captured, mixed, and written to a recording.
 2. The same mixed audio is resampled to 16 kHz and fed to the transcription engine, which emits transcript lines as the meeting runs.
 3. When you ask for a summary, the transcript goes to whichever LLM provider you configured — the local sidecar by default.
+
+![Live transcription while a meeting is being recorded](docs/imgs/recording.png)
 
 Everything above is a local process. Cloud STT and cloud summary providers are the only paths that leave your machine, and only when you select one and supply a key.
 
