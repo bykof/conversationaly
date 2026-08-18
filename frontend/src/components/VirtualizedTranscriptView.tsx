@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useReducer, startTransition, useEffect, memo } from "react";
+import { useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { useRecordingState } from "@/contexts/RecordingStateContext";
 import { TranscriptSegmentData } from "@/types";
+import { speakerLabel, SpeakerNames } from "@/lib/speaker";
 import { Loader2, Mic } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +29,8 @@ export interface VirtualizedTranscriptViewProps {
     showConfidence?: boolean;
     /** Completely disable auto-scroll behavior (for meeting details page) */
     disableAutoScroll?: boolean;
+    speakerNames?: SpeakerNames;
+    onRenameSpeaker?: (speaker: string, name: string) => void;
 
     // Pagination props (infinite scroll)
     hasMore?: boolean;
@@ -63,6 +66,56 @@ function formatRecordingTime(seconds: number | undefined): string {
 // exported and summarised. A transcript that edits what was said is not a
 // transcript. Render what the model heard.
 
+function SpeakerTag({
+    speaker,
+    speakerNames,
+    onRename,
+}: {
+    speaker: string;
+    speakerNames?: SpeakerNames;
+    onRename?: (speaker: string, name: string) => void;
+}) {
+    const label = speakerLabel(speaker, speakerNames);
+    const [editing, setEditing] = useState(false);
+
+    if (!onRename) {
+        return <span className="font-medium text-ink-muted">{label}: </span>;
+    }
+
+    const withColon = (node: React.ReactNode) => <>{node}: </>;
+
+    if (editing) {
+        return (
+            <input
+                autoFocus
+                defaultValue={speakerNames?.[speaker] ?? ''}
+                placeholder={label}
+                aria-label={`Rename ${label}`}
+                className="mr-1 w-32 rounded border border-line bg-canvas px-1 text-md font-medium text-ink"
+                onBlur={(e) => {
+                    onRename(speaker, e.currentTarget.value);
+                    setEditing(false);
+                }}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                    if (e.key === 'Escape') setEditing(false);
+                }}
+            />
+        );
+    }
+
+    return withColon(
+        <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Rename this speaker for the whole meeting"
+            className="font-medium text-ink-muted underline decoration-dotted underline-offset-2 hover:text-ink"
+        >
+            {label}
+        </button>
+    );
+}
+
 // Memoized transcript segment component
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
@@ -70,12 +123,18 @@ const TranscriptSegment = memo(function TranscriptSegment({
     text,
     confidence,
     showConfidence,
+    speaker,
+    speakerNames,
+    onRenameSpeaker,
 }: {
     id: string;
     timestamp: number;
     text: string;
     confidence?: number;
     showConfidence: boolean;
+    speaker?: string;
+    speakerNames?: SpeakerNames;
+    onRenameSpeaker?: (speaker: string, name: string) => void;
 }) {
     const isSilence = text.trim() === '';
     const displayText = isSilence ? 'Silence' : text;
@@ -107,6 +166,13 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     isSilence ? 'italic text-ink-faint' : 'text-ink'
                 )}
             >
+                {speaker && (
+                    <SpeakerTag
+                        speaker={speaker}
+                        speakerNames={speakerNames}
+                        onRename={onRenameSpeaker}
+                    />
+                )}
                 {displayText}
                 {confidence !== undefined && showConfidence && (
                     <>
@@ -128,6 +194,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     partialText = '',
     showConfidence = true,
     disableAutoScroll = false,
+    speakerNames,
+    onRenameSpeaker,
     hasMore = false,
     isLoadingMore = false,
     totalCount = 0,
@@ -350,6 +418,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         text={segment.text}
                                         confidence={segment.confidence}
                                         showConfidence={showConfidence}
+                                        speaker={segment.speaker}
+                                        speakerNames={speakerNames}
+                                        onRenameSpeaker={onRenameSpeaker}
                                     />
                                 </div>
                             );
@@ -388,6 +459,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                     text={segment.text}
                                     confidence={segment.confidence}
                                     showConfidence={showConfidence}
+                                    speaker={segment.speaker}
+                                    speakerNames={speakerNames}
+                                    onRenameSpeaker={onRenameSpeaker}
                                 />
                             </div>
                         ))}

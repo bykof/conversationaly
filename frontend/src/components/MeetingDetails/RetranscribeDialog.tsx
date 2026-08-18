@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
+import { languageNames, languagesSummary } from '@/lib/languages';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -301,8 +302,8 @@ export function RetranscribeDialog({
               {/* Coverage is the catalog blurb; a language the model doesn't
                   advertise is resolved back to auto-detect in the engine. */}
               <p className="text-xs text-muted-foreground">
-                {selectedModelDetails?.languages
-                  ? `Model coverage: ${selectedModelDetails.languages}. Anything outside it falls back to auto-detect.`
+                {selectedModelDetails?.languages?.length
+                  ? `Model coverage: ${languagesSummary(selectedModelDetails.languages)} — ${languageNames(selectedModelDetails.languages).join(', ')}. Anything outside it falls back to auto-detect.`
                   : 'Select a specific language to improve accuracy, or use auto-detect'}
               </p>
             </div>

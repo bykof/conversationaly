@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
-use transcribe_cpp::{Model, RunOptions, Session, Transcript};
+use transcribe_cpp::{Diarize, Model, RunOptions, Session, Transcript};
 
 use crate::config::{
     transcribe_model, DEFAULT_TRANSCRIBE_MODEL, TRANSCRIBE_MODEL_BASE_URL,
@@ -49,19 +49,23 @@ pub struct ModelInfo {
     pub path: PathBuf,
     pub size_mb: u32,
     pub accuracy: String,
+    /// Measured WER for this quantization, and the set it was measured on.
+    /// Always shown together — see `TranscribeModel::wer`.
+    pub wer: Option<f32>,
+    pub wer_set: String,
     pub speed: String,
     pub status: ModelStatus,
     pub description: String,
     /// Whether the picker may offer this model for live recording without the
     /// VAD-segmented fallback. Catalog metadata, so it is known before download.
     pub streaming: bool,
-    /// Coverage blurb for the picker; `Capabilities::languages` supersedes it
-    /// once the model is loaded.
-    pub languages: String,
-    /// Display family, so the picker can group ~86 rows into collapsible sections.
-    pub family: String,
-    /// Whether this row belongs above the "All models" disclosure.
+    /// The model's own advertised language codes, from the catalog's harvest of
+    /// `general.languages`. The UI renders names from these and filters on them.
+    pub languages: Vec<String>,
+    /// Whether the picker marks this row "Recommended". Every row is listed
+    /// either way — this is a label, not a filter.
     pub recommended: bool,
+    pub diarizes: bool,
 }
 
 /// A batch transcription result. `confidence` is the mean per-token probability
@@ -71,6 +75,7 @@ pub struct ModelInfo {
 pub struct BatchResult {
     pub text: String,
     pub confidence: f32,
+    pub turns: Vec<SpeakerTurn>,
 }
 
 pub struct TranscribeEngine {
@@ -177,13 +182,15 @@ impl TranscribeEngine {
                 path,
                 size_mb,
                 accuracy: entry.accuracy.to_string(),
+                wer: entry.wer,
+                wer_set: entry.wer_set.to_string(),
                 speed: entry.speed.to_string(),
                 status,
                 description: entry.description.to_string(),
                 streaming: entry.streaming,
-                languages: entry.languages.to_string(),
-                family: entry.family.to_string(),
+                languages: entry.languages.iter().map(|s| s.to_string()).collect(),
                 recommended: crate::config::is_recommended_model(name),
+                diarizes: crate::config::model_diarizes(name),
             });
         }
 
@@ -297,8 +304,17 @@ impl TranscribeEngine {
         language: Option<String>,
     ) -> Result<BatchResult> {
         let language = self.resolve_language(language).await;
+        let diarizes = self
+            .get_current_model()
+            .await
+            .as_deref()
+            .is_some_and(crate::config::model_diarizes);
         let mut session = self.open_session().await?;
-        let options = RunOptions { language, ..Default::default() };
+        let options = RunOptions {
+            language,
+            diarize: if diarizes { Diarize::On } else { Diarize::Default },
+            ..Default::default()
+        };
 
         let transcript = tokio::task::spawn_blocking(move || {
             keep_partial_on_truncation(session.run(&audio, &options))
@@ -310,6 +326,7 @@ impl TranscribeEngine {
         Ok(BatchResult {
             confidence: mean_token_confidence(&transcript),
             text: transcript.text.trim().to_string(),
+            turns: speaker_turns(&transcript),
         })
     }
 
@@ -579,6 +596,42 @@ fn primary_subtag(code: &str) -> &str {
 /// Mean per-token probability. transcribe.cpp reports `p` on every token, so
 /// this replaces the old provider-specific confidence handling (Whisper had a
 /// score, Parakeet had none).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeakerTurn {
+    pub text: String,
+    pub speaker_id: i32,
+    pub start_ms: f64,
+    pub end_ms: f64,
+}
+
+pub fn speaker_turns(transcript: &Transcript) -> Vec<SpeakerTurn> {
+    if transcript.segments.iter().all(|s| s.speaker_id == 0) {
+        return vec![];
+    }
+
+    let mut turns: Vec<SpeakerTurn> = Vec::new();
+    for segment in &transcript.segments {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        match turns.last_mut() {
+            Some(turn) if turn.speaker_id == segment.speaker_id => {
+                turn.text.push(' ');
+                turn.text.push_str(text);
+                turn.end_ms = segment.t1_ms as f64;
+            }
+            _ => turns.push(SpeakerTurn {
+                text: text.to_string(),
+                speaker_id: segment.speaker_id,
+                start_ms: segment.t0_ms as f64,
+                end_ms: segment.t1_ms as f64,
+            }),
+        }
+    }
+    turns
+}
+
 pub fn mean_token_confidence(transcript: &Transcript) -> f32 {
     if transcript.tokens.is_empty() {
         // No tokens means no text; callers treat empty output as "nothing said"
@@ -652,7 +705,7 @@ mod tests {
             assert!(e.filename.ends_with(".gguf"), "{} is not a GGUF file", e.name);
             assert!(e.size_mb > 0, "{} has no size", e.name);
             assert!(!e.hf_repo.is_empty(), "{} has no HF repo", e.name);
-            assert!(!e.languages.is_empty(), "{} has no language blurb", e.name);
+            assert!(!e.languages.is_empty(), "{} has no advertised languages", e.name);
             // The generator derives the name from the filename, so a mismatch
             // means a hand-edit crept into the generated block.
             let stem = e.filename.trim_end_matches(".gguf").to_lowercase();

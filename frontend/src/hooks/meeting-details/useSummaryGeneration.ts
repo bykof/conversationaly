@@ -3,6 +3,8 @@ import { Transcript, Summary } from '@/types';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
+import { withSpeaker } from '@/lib/speaker';
+import { useSpeakerNames } from '@/hooks/useSpeakerNames';
 import { toast } from 'sonner';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
@@ -75,6 +77,7 @@ export function useSummaryGeneration({
 }: UseSummaryGenerationProps) {
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>('idle');
   const [summaryError, setSummaryError] = useState<string | null>(null);
+  const { speakerNames } = useSpeakerNames(meeting?.id);
 
   const { startSummaryPolling, stopSummaryPolling } = useSidebar();
 
@@ -392,11 +395,14 @@ export function useSummaryGeneration({
 
     return {
       transcriptText: allTranscripts
-        .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}`)
+        .map(
+          t =>
+            `${formatTime(t.audio_start_time, t.timestamp)} ${withSpeaker(t.text, t.speaker, speakerNames)}`
+        )
         .join('\n'),
       transcriptTexts: allTranscripts.map(t => t.text),
     };
-  }, []);
+  }, [speakerNames]);
 
   // Public API: Generate summary from transcripts
   const handleGenerateSummary = useCallback(async (customPrompt: string = '') => {

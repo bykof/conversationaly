@@ -22,6 +22,8 @@ pub struct AudioChunk {
     pub timestamp: f64,
     pub chunk_id: u64,
     pub device_type: DeviceType,
+    pub mic_rms: f32,
+    pub sys_rms: f32,
 }
 
 /// Processed audio chunk (post-VAD) for recording

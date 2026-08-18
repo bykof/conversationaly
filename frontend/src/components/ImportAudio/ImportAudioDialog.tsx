@@ -37,6 +37,7 @@ import { useRouter } from 'next/navigation';
 import { useSidebar } from '../Sidebar/SidebarProvider';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
+import { languageNames, languagesSummary } from '@/lib/languages';
 
 
 interface ImportAudioDialogProps {
@@ -353,11 +354,13 @@ export function ImportAudioDialog({
                             ))}
                           </SelectContent>
                         </Select>
-                        {selectedModel?.languages && (
+                        {selectedModel?.languages?.length ? (
                           <p className="text-xs text-muted-foreground">
-                            Model coverage: {selectedModel.languages}. Anything outside it falls back to auto-detect.
+                            Model coverage: {languagesSummary(selectedModel.languages)} —{' '}
+                            {languageNames(selectedModel.languages).join(', ')}. Anything
+                            outside it falls back to auto-detect.
                           </p>
-                        )}
+                        ) : null}
                       </div>
 
                       {/* Model selector */}

@@ -276,3 +276,59 @@ pub async fn open_database_folder(app: AppHandle) -> Result<(), String> {
     info!("Opened database folder: {}", folder_path);
     Ok(())
 }
+
+#[tauri::command]
+pub async fn get_speaker_names(
+    app: AppHandle,
+    meeting_id: String,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Database not initialized".to_string())?;
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT speaker, name FROM speaker_names WHERE meeting_id = ?")
+            .bind(&meeting_id)
+            .fetch_all(state.db_manager.pool())
+            .await
+            .map_err(|e| format!("Failed to read speaker names: {}", e))?;
+
+    Ok(rows.into_iter().collect())
+}
+
+#[tauri::command]
+pub async fn set_speaker_name(
+    app: AppHandle,
+    meeting_id: String,
+    speaker: String,
+    name: String,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Database not initialized".to_string())?;
+    let pool = state.db_manager.pool();
+    let name = name.trim();
+
+    if name.is_empty() {
+        sqlx::query("DELETE FROM speaker_names WHERE meeting_id = ? AND speaker = ?")
+            .bind(&meeting_id)
+            .bind(&speaker)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Failed to clear speaker name: {}", e))?;
+        return Ok(());
+    }
+
+    sqlx::query(
+        "INSERT INTO speaker_names (meeting_id, speaker, name) VALUES (?, ?, ?)
+         ON CONFLICT (meeting_id, speaker) DO UPDATE SET name = excluded.name",
+    )
+    .bind(&meeting_id)
+    .bind(&speaker)
+    .bind(name)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to save speaker name: {}", e))?;
+
+    Ok(())
+}

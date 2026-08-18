@@ -323,7 +323,7 @@ async fn run_retranscription<R: Runtime>(
     info!("Processing {} segments (after splitting)", processable_count);
 
     // Process each speech segment with progress updates
-    let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new(); // (text, start_ms, end_ms)
+    let mut all_transcripts: Vec<(String, f64, f64, Option<String>)> = Vec::new(); // (text, start_ms, end_ms)
     let mut total_confidence = 0.0f32;
 
     for (i, segment) in processable_segments.iter().enumerate() {
@@ -359,7 +359,7 @@ async fn run_retranscription<R: Runtime>(
             .transcribe_batch(segment.samples.clone(), language.clone())
             .await
             .map_err(|e| anyhow!("Transcription failed on segment {}: {}", i, e))?;
-        let (text, conf) = (result.text, result.confidence);
+        let (text, conf, turns) = (result.text, result.confidence, result.turns);
 
         // Skip empty transcripts
         let trimmed = text.trim();
@@ -369,7 +369,23 @@ async fn run_retranscription<R: Runtime>(
                 i + 1, processable_count, segment_duration_sec, conf,
                 if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
             );
-            all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
+            if turns.is_empty() {
+                all_transcripts.push((
+                    text,
+                    segment.start_timestamp_ms,
+                    segment.end_timestamp_ms,
+                    None,
+                ));
+            } else {
+                for turn in turns {
+                    all_transcripts.push((
+                        turn.text,
+                        segment.start_timestamp_ms + turn.start_ms,
+                        segment.start_timestamp_ms + turn.end_ms,
+                        Some(turn.speaker_id.to_string()),
+                    ));
+                }
+            }
             total_confidence += conf;
         } else {
             debug!("Segment {}/{}: {:.1}s — empty transcription", i + 1, processable_count, segment_duration_sec);
@@ -662,7 +678,7 @@ mod tests {
 
     #[test]
     fn test_create_transcript_segments_empty() {
-        let transcripts: Vec<(String, f64, f64)> = vec![];
+        let transcripts: Vec<(String, f64, f64, Option<String>)> = vec![];
         let segments = create_transcript_segments(&transcripts);
         assert!(segments.is_empty());
     }
@@ -670,7 +686,7 @@ mod tests {
     #[test]
     fn test_create_transcript_segments_single() {
         let transcripts = vec![
-            ("Hello world".to_string(), 0.0, 1500.0), // 0-1.5 seconds
+            ("Hello world".to_string(), 0.0, 1500.0, None), // 0-1.5 seconds
         ];
         let segments = create_transcript_segments(&transcripts);
 
@@ -684,9 +700,9 @@ mod tests {
     #[test]
     fn test_create_transcript_segments_multiple() {
         let transcripts = vec![
-            ("First segment".to_string(), 0.0, 2000.0),      // 0-2 seconds
-            ("Second segment".to_string(), 3000.0, 5000.0),  // 3-5 seconds
-            ("Third segment".to_string(), 6500.0, 8000.0),   // 6.5-8 seconds
+            ("First segment".to_string(), 0.0, 2000.0, None),      // 0-2 seconds
+            ("Second segment".to_string(), 3000.0, 5000.0, None),  // 3-5 seconds
+            ("Third segment".to_string(), 6500.0, 8000.0, None),   // 6.5-8 seconds
         ];
         let segments = create_transcript_segments(&transcripts);
 
@@ -714,7 +730,7 @@ mod tests {
     #[test]
     fn test_create_transcript_segments_trims_whitespace() {
         let transcripts = vec![
-            ("  Hello with spaces  ".to_string(), 0.0, 1000.0),
+            ("  Hello with spaces  ".to_string(), 0.0, 1000.0, None),
         ];
         let segments = create_transcript_segments(&transcripts);
 
@@ -725,8 +741,8 @@ mod tests {
     #[test]
     fn test_create_transcript_segments_generates_unique_ids() {
         let transcripts = vec![
-            ("Segment one".to_string(), 0.0, 1000.0),
-            ("Segment two".to_string(), 1000.0, 2000.0),
+            ("Segment one".to_string(), 0.0, 1000.0, None),
+            ("Segment two".to_string(), 1000.0, 2000.0, None),
         ];
         let segments = create_transcript_segments(&transcripts);
 

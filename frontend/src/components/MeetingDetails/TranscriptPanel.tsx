@@ -5,6 +5,7 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { PaneDivider } from '@/components/PaneDivider';
 import { useMemo } from 'react';
+import { useSpeakerNames } from '@/hooks/useSpeakerNames';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -61,8 +62,11 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      speaker: t.speaker,
     }));
   }, [transcripts, usePagination, segments]);
+
+  const { speakerNames, renameSpeaker } = useSpeakerNames(meetingId);
 
   return (
     // User-set width (`--pane-transcript`, dragged via the divider below), not
@@ -102,6 +106,8 @@ export function TranscriptPanel({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
+          speakerNames={speakerNames}
+          onRenameSpeaker={meetingId ? renameSpeaker : undefined}
         />
       </div>
 

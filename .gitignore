@@ -78,3 +78,6 @@ target/
 
 frontend/src-tauri/binaries/
 .hallmark/
+
+# Python bytecode from the catalog generator
+__pycache__/

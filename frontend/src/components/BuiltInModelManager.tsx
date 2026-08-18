@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { Download, RefreshCw, BadgeAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -41,6 +42,7 @@ export function BuiltInModelManager({
   layout = 'inline',
 }: BuiltInModelManagerProps) {
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [installedOnly, setInstalledOnly] = useState(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasFetched, setHasFetched] = useState<boolean>(false);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
@@ -275,10 +277,26 @@ export function BuiltInModelManager({
     );
   }
 
+  // On disk, not merely usable: a corrupted or half-downloaded model is still
+  // installed, and hiding the row someone needs to delete or retry is the one
+  // outcome this filter must not produce.
+  const isInstalled = (m: ModelInfo) => m.status.type !== 'not_downloaded';
+  const installedCount = models.filter(isInstalled).length;
+  const listed = installedOnly ? models.filter(isInstalled) : models;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <h4 className="text-sm font-bold">Built-in AI Models</h4>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+          <Switch
+            checked={installedOnly}
+            onCheckedChange={setInstalledOnly}
+            aria-label="Show only installed models"
+          />
+          Installed only
+          <span className="readout text-2xs text-ink-faint">({installedCount})</span>
+        </label>
       </div>
 
       <div
@@ -287,7 +305,12 @@ export function BuiltInModelManager({
           layout === 'dialog' && 'max-h-[50vh] overflow-y-auto pr-2 pb-2'
         )}
       >
-        {models.map((model) => {
+        {installedOnly && listed.length === 0 && (
+          <p className="py-6 text-center text-sm text-ink-muted">
+            No models are installed yet. Turn off &ldquo;Installed only&rdquo; to download one.
+          </p>
+        )}
+        {listed.map((model) => {
           const progress = downloadProgress[model.name];
           const progressInfo = downloadProgressInfo[model.name];
           const modelIsDownloading = downloadingModels.has(model.name);

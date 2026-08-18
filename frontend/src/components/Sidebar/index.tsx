@@ -24,6 +24,7 @@ import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { cn } from '@/lib/utils';
+import { useAppVersion } from '@/hooks/useAppVersion';
 
 import { Dialog, DialogContent, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 
@@ -40,8 +41,6 @@ interface SidebarItem {
   type: 'folder' | 'file';
   children?: SidebarItem[];
 }
-
-const APP_VERSION = '1.0.0';
 
 /**
  * Every control in the rail, at both widths. One primitive rather than an
@@ -117,6 +116,7 @@ function RailRow({
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const appVersion = useAppVersion();
   const {
     currentMeeting,
     setCurrentMeeting,
@@ -618,9 +618,11 @@ const Sidebar: React.FC = () => {
             <div className="mt-0.5 flex items-center gap-0.5">
               <ThemeToggleButton />
               <Info isCollapsed={false} />
-              <span className="readout ml-auto pr-1 text-2xs text-ink-faint">
-                v{APP_VERSION}
-              </span>
+              {appVersion && (
+                <span className="readout ml-auto pr-1 text-2xs text-ink-faint">
+                  v{appVersion}
+                </span>
+              )}
             </div>
           )}
         </div>

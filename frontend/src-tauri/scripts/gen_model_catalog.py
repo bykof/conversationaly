@@ -14,8 +14,12 @@ only the region between the GENERATED markers in src/config.rs.
 """
 
 import glob
+import json
 import re
+import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -152,15 +156,56 @@ def speed_of(size_mb, streaming):
     return "Slow"
 
 
+def wer_set_of(text):
+    """The eval set the card's WER column is measured on.
+
+    Every card measures LibriSpeech test-clean except GigaAM's four, which are
+    Russian models scored on FLEURS ru. One keyword rather than a hand-kept list
+    so it cannot drift from the card.
+    """
+    if "FLEURS ru test split" in text:
+        return "FLEURS ru (Russian)"
+    return "LibriSpeech test-clean"
+
+
+def wer_from_preset_table(text, quants):
+    """{quant: wer} from a `| Preset | … | LibriSpeech test-clean … |` table.
+
+    Some cards (nemotron-3.5, the default model) keep WER in a per-preset
+    accuracy table instead of the Download table. Without this the default row
+    would be the only blank one in the picker. Rows are accepted only for quants
+    the Download table already listed, so an unrelated table cannot leak in.
+    """
+    column = None
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if column is None:
+            for i, cell in enumerate(cells):
+                if "LibriSpeech test-clean" in cell:
+                    column = i
+            continue
+        if cells[0] in quants and len(cells) > column:
+            try:
+                out[cells[0]] = float(cells[column])
+            except ValueError:
+                continue
+    return out
+
+
 def parse_card(path):
-    """Return {quant: (slug, repo, filename, size_mb, wer)} for one card.
+    """Return {quant: (slug, repo, filename, size_mb, wer, wer_set)} for one card.
 
     `slug` is the lowercased variant name and is what the catalog stores;
     `filename` keeps the repo's real casing (Fun-ASR-Nano-2512, SenseVoiceSmall)
     because it has to match the URL byte for byte.
     """
+    text = path.read_text(encoding="utf-8")
     quants = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         m = ROW.match(line.strip())
         if not m:
             continue
@@ -173,26 +218,107 @@ def parse_card(path):
             m["file"],
             size_mb,
             float(m["wer"]) if m["wer"] else None,
+            wer_set_of(text),
         )
+
+    if quants and all(q[4] is None for q in quants.values()):
+        fallback = wer_from_preset_table(text, quants)
+        for quant, wer in fallback.items():
+            *head, _, _ = quants[quant]
+            # The fallback reads the LibriSpeech column by name, so the set is
+            # that column regardless of what else the card benchmarks.
+            quants[quant] = (*head, wer, "LibriSpeech test-clean")
     return quants
+
+
+GGUF_KV_TYPE_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+# Enough of every GGUF seen so far to cover the whole KV header. The language
+# list sits in it, long before any tensor data.
+GGUF_HEADER_BYTES = 400_000
+
+LANG_CACHE = Path(tempfile.gettempdir()) / "transcribe-catalog-languages.json"
+
+
+def gguf_languages(repo, filename):
+    """`general.languages` straight out of the model's GGUF header.
+
+    The model's own answer, not a blurb someone typed: the hand-kept table this
+    replaced claimed 39 locales for nemotron-3.5 (its GGUF says 32) and a bare
+    "Multilingual" for Granite. Only the header is fetched — a few hundred KB by
+    HTTP range, not the multi-gigabyte weights.
+    """
+    cache = json.loads(LANG_CACHE.read_text()) if LANG_CACHE.exists() else {}
+    if filename in cache:
+        return cache[filename]
+
+    url = f"https://huggingface.co/handy-computer/{repo}/resolve/main/{filename}"
+    with tempfile.NamedTemporaryFile() as tmp:
+        got = subprocess.run(
+            ["curl", "-sL", "--max-time", "120", "-r", f"0-{GGUF_HEADER_BYTES}",
+             "-o", tmp.name, url]
+        )
+        if got.returncode != 0:
+            raise SystemExit(f"could not fetch GGUF header for {filename}")
+        langs = _parse_gguf_languages(Path(tmp.name))
+
+    if langs is None:
+        raise SystemExit(f"{filename} has no general.languages — cannot label it honestly")
+
+    cache[filename] = langs
+    LANG_CACHE.write_text(json.dumps(cache))
+    return langs
+
+
+def _parse_gguf_languages(path):
+    with path.open("rb") as f:
+        if f.read(4) != b"GGUF":
+            raise SystemExit(f"{path} is not a GGUF file")
+        f.read(4)   # version
+        f.read(8)   # tensor count
+        n_kv = struct.unpack("<Q", f.read(8))[0]
+
+        def read_str():
+            n = struct.unpack("<Q", f.read(8))[0]
+            return f.read(n).decode("utf-8", "replace")
+
+        for _ in range(n_kv):
+            key = read_str()
+            kind = struct.unpack("<I", f.read(4))[0]
+            if kind == 8:
+                value = read_str()
+            elif kind == 9:
+                elem = struct.unpack("<I", f.read(4))[0]
+                count = struct.unpack("<Q", f.read(8))[0]
+                if elem == 8:
+                    value = [read_str() for _ in range(count)]
+                else:
+                    f.read(GGUF_KV_TYPE_SIZES.get(elem, 4) * count)
+                    value = None
+            else:
+                f.read(GGUF_KV_TYPE_SIZES.get(kind, 4))
+                value = None
+            if key == "general.languages":
+                return value
+    return None
 
 
 def entries_for(quants):
     """Pick the quantizations to ship for one variant."""
     if Q8 not in quants:
         return []
-    slug, _, _, size_mb, _ = quants[Q8]
+    slug, _, _, size_mb, _, _ = quants[Q8]
     if slug in EXCLUDED:
         return []
 
-    family, languages, fallback = family_of(slug)
+    family, _, fallback = family_of(slug)
     streaming = slug in STREAMING
     picked = [("q8", quants[Q8])]
     if size_mb > Q4_THRESHOLD_MB and Q4 in quants:
         picked.append(("q4", quants[Q4]))
 
     out = []
-    for suffix, (_, repo, filename, size_mb, wer) in picked:
+    for suffix, (_, repo, filename, size_mb, wer, wer_set) in picked:
         # No languages here — that has its own field, and repeating it produced
         # "Nemotron 3.5 — Multilingual — 39 locales".
         note = " — smaller download, lower memory use" if suffix == "q4" else ""
@@ -204,9 +330,11 @@ def entries_for(quants):
                 "filename": filename,
                 "size_mb": size_mb,
                 "accuracy": accuracy_of(wer, fallback),
+                "wer": wer,
+                "wer_set": wer_set if wer is not None else "",
                 "speed": speed_of(size_mb, streaming),
                 "streaming": streaming,
-                "languages": languages,
+                "languages": gguf_languages(repo, filename),
                 "description": f"{family}{note}",
             }
         )
@@ -223,9 +351,13 @@ def render(entries):
         lines.append(f'        filename: "{e["filename"]}",\n')
         lines.append(f'        size_mb: {e["size_mb"]},\n')
         lines.append(f'        accuracy: "{e["accuracy"]}",\n')
+        wer = "None" if e["wer"] is None else f'Some({e["wer"]:.2f})'
+        lines.append(f"        wer: {wer},\n")
+        lines.append(f'        wer_set: "{e["wer_set"]}",\n')
         lines.append(f'        speed: "{e["speed"]}",\n')
         lines.append(f'        streaming: {"true" if e["streaming"] else "false"},\n')
-        lines.append(f'        languages: "{e["languages"]}",\n')
+        codes = ", ".join(f'"{c}"' for c in e["languages"])
+        lines.append(f"        languages: &[{codes}],\n")
         lines.append(f'        description: "{e["description"]}",\n')
         lines.append("    },\n")
     lines.append(END)

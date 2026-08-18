@@ -154,11 +154,13 @@ pub(crate) async fn unload_engine_after_batch() {
 }
 
 /// Create transcript segments from transcription results.
-/// Each tuple is (text, start_ms, end_ms) from VAD timestamps.
-pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> Vec<TranscriptSegment> {
+/// Each tuple is (text, start_ms, end_ms, speaker) from VAD timestamps.
+pub(crate) fn create_transcript_segments(
+    transcripts: &[(String, f64, f64, Option<String>)],
+) -> Vec<TranscriptSegment> {
     transcripts
         .iter()
-        .map(|(text, start_ms, end_ms)| {
+        .map(|(text, start_ms, end_ms, speaker)| {
             let start_seconds = start_ms / 1000.0;
             let end_seconds = end_ms / 1000.0;
             let duration = end_seconds - start_seconds;
@@ -170,6 +172,7 @@ pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> 
                 audio_start_time: Some(start_seconds),
                 audio_end_time: Some(end_seconds),
                 duration: Some(duration),
+                speaker: speaker.clone(),
             }
         })
         .collect()
@@ -192,6 +195,7 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
                 "audio_start_time": s.audio_start_time,
                 "audio_end_time": s.audio_end_time,
                 "duration": s.duration,
+                "speaker": s.speaker,
                 "sequence_id": i
             })
         }).collect::<Vec<_>>()
@@ -209,17 +213,35 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
     Ok(())
 }
 
+pub(crate) fn speaker_label(speaker: &str) -> String {
+    if speaker == "you" {
+        "You".to_string()
+    } else {
+        format!("Speaker {speaker}")
+    }
+}
+
 /// Segments in the (start seconds, text) shape [`write_transcript_md`] takes.
-pub(crate) fn markdown_segments(segments: &[TranscriptSegment]) -> Vec<(f64, &str)> {
+
+pub(crate) fn markdown_segments(segments: &[TranscriptSegment]) -> Vec<(f64, String)> {
     segments
         .iter()
-        .map(|s| (s.audio_start_time.unwrap_or(0.0), s.text.as_str()))
+        .map(|s| {
+            let text = match &s.speaker {
+                Some(speaker) => format!("{}: {}", speaker_label(speaker), s.text),
+                None => s.text.clone(),
+            };
+            (s.audio_start_time.unwrap_or(0.0), text)
+        })
         .collect()
 }
 
 /// Render a transcript as markdown: heading, an updated line, then one
 /// `[HH:MM:SS] text` paragraph per segment.
-pub(crate) fn transcript_markdown(meeting_name: Option<&str>, segments: &[(f64, &str)]) -> String {
+pub(crate) fn transcript_markdown(
+    meeting_name: Option<&str>,
+    segments: &[(f64, String)],
+) -> String {
     let mut out = format!("# {}\n\n", meeting_name.unwrap_or("Meeting"));
     out.push_str(&format!(
         "_{} segments · updated {}_\n\n",
@@ -247,7 +269,7 @@ pub(crate) fn transcript_markdown(meeting_name: Option<&str>, segments: &[(f64, 
 pub(crate) fn write_transcript_md(
     folder: &Path,
     meeting_name: Option<&str>,
-    segments: &[(f64, &str)],
+    segments: &[(f64, String)],
 ) -> Result<()> {
     let fallback_name = meeting_name.is_none().then(|| meeting_name_from_metadata(folder)).flatten();
     let markdown = transcript_markdown(meeting_name.or(fallback_name.as_deref()), segments);
@@ -329,6 +351,8 @@ pub(crate) const MAX_SEGMENT_SAMPLES: usize = 25 * 16000;
 /// `split_segment_at_silence` searches +/-3s for a quiet cut, so real segments
 /// land in the 5-11s range rather than exactly 8.
 pub(crate) const LIVE_MAX_SEGMENT_SAMPLES: usize = 8 * 16000;
+
+pub(crate) const DIARIZED_MAX_SEGMENT_SAMPLES: usize = 30 * 16000;
 
 /// Split a long speech segment at the lowest-energy (silence) point near the target size.
 ///
@@ -511,7 +535,11 @@ mod tests {
     fn transcript_markdown_has_heading_and_stamped_segments() {
         let md = transcript_markdown(
             Some("Team Standup"),
-            &[(0.0, "Hello everyone."), (3725.5, "  Wrapping up.  "), (10.0, "   ")],
+            &[
+                (0.0, "Hello everyone.".to_string()),
+                (3725.5, "  Wrapping up.  ".to_string()),
+                (10.0, "   ".to_string()),
+            ],
         );
 
         assert!(md.starts_with("# Team Standup\n\n"), "{md}");
@@ -535,7 +563,7 @@ mod tests {
         )
         .unwrap();
 
-        write_transcript_md(dir.path(), None, &[(0.0, "Hello.")]).unwrap();
+        write_transcript_md(dir.path(), None, &[(0.0, "Hello.".to_string())]).unwrap();
 
         let md = std::fs::read_to_string(dir.path().join("transcript.md")).unwrap();
         assert!(md.starts_with("# Design Review\n\n"), "{md}");

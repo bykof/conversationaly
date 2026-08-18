@@ -38,6 +38,8 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start
     pub audio_end_time: f64,   // Seconds from recording start
     pub duration: f64,         // Segment duration in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// The volatile live-text event. Deliberately a different event from
@@ -105,6 +107,7 @@ impl<R: Runtime> TranscriptSink for TauriSink<R> {
             audio_start_time: chunk.audio_start,
             audio_end_time: chunk.audio_end,
             duration: chunk.duration(),
+            speaker: chunk.speaker,
             text: chunk.text,
         };
 

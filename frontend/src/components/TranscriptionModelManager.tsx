@@ -14,6 +14,7 @@ import {
   ModelInfo,
   ModelSort,
   TranscribeAPI,
+  corruptedSizeMb,
   downloadProgress,
   formatFileSize,
   getModelIcon,
@@ -31,21 +32,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-
-/**
- * Spelled-out language lists for the catalog's `languages` blurb, keyed by the
- * blurb itself — an identical blurb means an identical language set. A blurb
- * with no entry here simply gets no tooltip, so filling the rest in later is one
- * line each. Only add a set you have checked against the model card.
- */
-const LANGUAGE_DETAIL: Record<string, string> = {
-  // huggingface.co/nvidia/canary-1b-v2 and .../parakeet-tdt-0.6b-v3 — same 25.
-  'Multilingual — 25 European languages':
-    'Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, ' +
-    'French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, ' +
-    'Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, ' +
-    'Swedish, Ukrainian',
-};
+import { Search } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { languageHaystack, languageNames, languagesSummary } from '@/lib/languages';
+import { cn } from '@/lib/utils';
 
 interface Props {
   selectedModel?: string;
@@ -57,8 +47,9 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [sort, setSort] = useState<ModelSort>('catalog');
+  const [query, setQuery] = useState('');
+  const [installedOnly, setInstalledOnly] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -127,6 +118,10 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
     const available = model.status === 'Available';
     const downloading = isDownloading(model.status);
     const selected = selectedModel === model.name;
+    // On disk but short of its catalog size — an interrupted download. It can
+    // neither be used nor re-fetched silently, and it is still occupying the
+    // disk, so the row has to say so and offer both ways out.
+    const truncatedMb = corruptedSizeMb(model.status);
 
     // Selection is a brand border, never a filled surface — the fill is what
     // made a selected card read as a status callout. See /DESIGN.md.
@@ -151,6 +146,24 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
               >
                 {getModelUseTag(model)}
               </span>
+              {model.diarizes && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="cursor-default rounded-full border border-line px-2 py-0.5 text-xs text-ink-muted">
+                      Labels speakers
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Marks who is speaking, as Speaker 1, Speaker 2, … You can rename
+                    them once the meeting is saved.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {model.recommended && (
+                <span className="rounded-full bg-info-soft px-2 py-0.5 text-xs text-info-ink">
+                  Recommended
+                </span>
+              )}
             </div>
             <p className="mt-1 text-sm text-ink-muted">{model.description}</p>
             <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-muted">
@@ -158,6 +171,27 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
                 <dt>Quality</dt>
                 <dd className="font-medium text-ink">{model.accuracy}</dd>
               </div>
+              {model.wer !== null && (
+                <div className="flex gap-1">
+                  <dt>WER</dt>
+                  <dd className="readout text-ink">
+                    <Tooltip>
+                      <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-2">
+                        {model.wer.toFixed(2)}%
+                      </TooltipTrigger>
+                      {/* The set is in the tooltip, not the row, because the row has
+                          to stay scannable across 86 models — but it is one hover
+                          away, because 1.27% on English read speech and 8.40% on
+                          Russian are not two points on the same scale. */}
+                      <TooltipContent side="top">
+                        Word error rate on {model.wer_set}, measured by transcribe.cpp.
+                        Lower is better, and only comparable against other models on
+                        the same set — not against your meetings.
+                      </TooltipContent>
+                    </Tooltip>
+                  </dd>
+                </div>
+              )}
               <div className="flex gap-1">
                 <dt>Speed</dt>
                 <dd className="font-medium text-ink">{model.speed}</dd>
@@ -169,18 +203,14 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
               <div className="flex gap-1">
                 <dt className="sr-only">Languages</dt>
                 <dd>
-                  {LANGUAGE_DETAIL[model.languages] ? (
-                    <Tooltip>
-                      <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-2">
-                        {model.languages}
-                      </TooltipTrigger>
-                      <TooltipContent side="top">
-                        {LANGUAGE_DETAIL[model.languages]}
-                      </TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    model.languages
-                  )}
+                  <Tooltip>
+                    <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-2">
+                      {languagesSummary(model.languages)}
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-80">
+                      {languageNames(model.languages).join(', ')}
+                    </TooltipContent>
+                  </Tooltip>
                 </dd>
               </div>
             </dl>
@@ -202,16 +232,23 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
                 disabled={busy !== null}
                 onClick={() => download(model.name)}
               >
-                Download
+                {truncatedMb === null ? 'Download' : 'Download again'}
               </Button>
             )}
-            {available && (
+            {(available || truncatedMb !== null) && (
               <Button size="sm" variant="ghost" onClick={() => remove(model.name)}>
                 Delete
               </Button>
             )}
           </div>
         </div>
+
+        {truncatedMb !== null && (
+          <p className="mt-3 rounded-md bg-warn-soft px-3 py-2 text-xs text-warn-ink">
+            Damaged download — {truncatedMb} MB on disk of {model.size_mb} MB. Download
+            again to repair it, or delete it to reclaim the space.
+          </p>
+        )}
 
         {downloading && (
           <div className="mt-3">
@@ -234,21 +271,32 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
     return <div className="text-sm text-ink-muted">Loading models…</div>;
   }
 
-  // A downloaded or selected model must stay reachable even when it is not on the
-  // recommended list, or the user cannot see what they are currently using
-  // without expanding the whole catalog.
-  const isPinned = (m: ModelInfo) =>
-    m.recommended || m.name === selectedModel || m.status === 'Available';
-  const pinned = sortModels(models.filter(isPinned), sort);
-  const rest = models.filter((m) => !isPinned(m));
-
-  // Insertion order is the catalog's order, which is live-capable first.
-  const families = new Map<string, ModelInfo[]>();
-  for (const model of rest) {
-    const group = families.get(model.family);
-    if (group) group.push(model);
-    else families.set(model.family, [model]);
-  }
+  // One list, every model, in whatever order the sort control asks for. The old
+  // split — recommended above a collapsed "All models" — hid the catalog behind a
+  // click and made a sort apply to two lists separately. What it communicated
+  // survives as the "Recommended" pill on the card.
+  const q = query.trim().toLowerCase();
+  // On disk, not merely usable: a corrupted or half-downloaded model is still
+  // installed, and hiding the row someone needs to delete or retry is the one
+  // outcome this filter must not produce.
+  const installedCount = models.filter((m) => m.status !== 'Missing').length;
+  const listed = sortModels(models, sort)
+    .filter((m) => !installedOnly || m.status !== 'Missing')
+    .filter(
+    (m) =>
+      !q ||
+      [
+        getModelLabel(m.name),
+        m.description,
+        m.accuracy,
+        m.speed,
+        m.diarizes ? 'labels speakers diarization' : '',
+        languageHaystack(m.languages),
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(q)
+    );
 
   return (
     <div className="space-y-3">
@@ -258,11 +306,39 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-[52ch] text-xs text-ink-muted">
-          Quality is a tier from each model&apos;s published error rate, and speed is
-          estimated from its size. Both are catalog estimates — reliable for picking
-          a tier, not for ranking two models against each other.
+          Quality is a tier from each model&apos;s measured error rate — the WER beside
+          it is that measurement. Speed is estimated from file size. A WER only ranks
+          against models measured on the same set; hover it to see which.
         </p>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint"
+            />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search models"
+              aria-label="Search transcription models"
+              className={cn(
+                'h-8 w-48 rounded-md border border-line bg-sunken pl-8 pr-2 text-xs text-ink',
+                'placeholder:text-ink-muted',
+                'transition-colors duration-fast',
+                'hover:border-line-strong focus:border-brand focus:bg-elevated'
+              )}
+            />
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+            <Switch
+              checked={installedOnly}
+              onCheckedChange={setInstalledOnly}
+              aria-label="Show only installed models"
+            />
+            Installed only
+            <span className="readout text-2xs text-ink-faint">({installedCount})</span>
+          </label>
           <span className="text-sm text-ink-muted">Sort by</span>
           <Select value={sort} onValueChange={(v) => setSort(v as ModelSort)}>
             <SelectTrigger className="h-8 w-40" aria-label="Sort models by">
@@ -279,32 +355,14 @@ export default function TranscriptionModelManager({ selectedModel, onModelSelect
         </div>
       </div>
 
-      {pinned.map(card)}
-
-      {rest.length > 0 && (
-        <div className="pt-1">
-          <button
-            type="button"
-            className="text-sm font-medium text-ink hover:text-ink"
-            onClick={() => setShowAll((v) => !v)}
-            aria-expanded={showAll}
-          >
-            {showAll ? '▾' : '▸'} All models ({rest.length})
-          </button>
-
-          {showAll && (
-            <div className="mt-3 space-y-5">
-              {[...families.entries()].map(([family, group]) => (
-                <div key={family} className="space-y-3">
-                  <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                    {family}
-                  </h4>
-                  {sortModels(group, sort).map(card)}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      {listed.length === 0 && (q || installedOnly) ? (
+        <p className="py-6 text-center text-sm text-ink-muted">
+          {installedOnly && installedCount === 0
+            ? 'No models are installed yet. Turn off “Installed only” to download one.'
+            : `No models match “${query.trim()}”.`}
+        </p>
+      ) : (
+        listed.map(card)
       )}
 
       <button

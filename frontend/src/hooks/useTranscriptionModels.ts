@@ -6,8 +6,8 @@ import { LOCAL_PROVIDER } from '@/constants/modelDefaults';
 export interface RawModelInfo {
   name: string;
   size_mb: number;
-  /** Coverage blurb from the catalog, e.g. "English only", "Multilingual — 99 languages". */
-  languages: string;
+  /** The model's own advertised language codes, from its GGUF metadata. */
+  languages: string[];
   status: 'Available' | 'Missing' | { Downloading: { progress: number } } | { Error: string };
 }
 
@@ -16,7 +16,7 @@ export interface ModelOption {
   name: string;
   displayName: string;
   size_mb: number;
-  languages: string;
+  languages: string[];
 }
 
 interface TranscriptModelConfig {

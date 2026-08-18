@@ -30,6 +30,7 @@ pub fn run(
         // A failed chunk costs that audio, not the meeting's transcript. The
         // decoder is usually fine on the next one, and ending a recording's
         // transcript over one bad buffer is the worse failure by far.
+        transcriber.note_levels(chunk.timestamp, chunk.mic_rms, chunk.sys_rms);
         if let Err(e) = transcriber.feed(&chunk.data, &mut sink) {
             sink.warn(&e.to_string());
         }
@@ -105,6 +106,7 @@ pub(crate) mod tests {
                 audio_start: 0.0,
                 audio_end: 1.0,
                 confidence: None,
+                speaker: None,
             });
             Ok(())
         }
@@ -116,6 +118,7 @@ pub(crate) mod tests {
                 audio_start: 1.0,
                 audio_end: 2.0,
                 confidence: None,
+                speaker: None,
             });
             Ok(())
         }
@@ -135,6 +138,8 @@ pub(crate) mod tests {
             timestamp: 0.0,
             chunk_id: 0,
             device_type: DeviceType::Microphone,
+            mic_rms: 0.0,
+            sys_rms: 0.0,
         }
     }
 

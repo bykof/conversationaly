@@ -173,6 +173,7 @@ mod tests {
             audio_start: (audio_end - 1.0).max(0.0),
             audio_end,
             confidence: None,
+            speaker: None,
         }
     }
 

@@ -23,17 +23,20 @@ export interface ModelInfo {
   path: string;
   size_mb: number;
   accuracy: ModelAccuracy;
+  /** Measured word error rate, only comparable within `wer_set`. */
+  wer: number | null;
+  /** The eval set `wer` was measured on; never shown without it. */
+  wer_set: string;
   speed: ProcessingSpeed;
   status: ModelStatus;
   description: string;
   /** Can drive live recording without VAD segmentation. */
   streaming: boolean;
-  /** Coverage blurb; the loaded model's own language list supersedes it. */
-  languages: string;
-  /** Display family, used to group the collapsed list. */
-  family: string;
-  /** Belongs above the "All models" disclosure. */
+  /** The model's own advertised language codes, from its GGUF metadata. */
+  languages: string[];
+  /** Carries the "Recommended" pill; the picker lists every model regardless. */
   recommended: boolean;
+  diarizes: boolean;
 }
 
 export interface ModelDownloadProgress {
@@ -133,6 +136,20 @@ export function formatFileSize(sizeMb: number): string {
 
 export function isDownloading(status: ModelStatus): boolean {
   return typeof status === 'object' && 'Downloading' in status;
+}
+
+/**
+ * MB on disk when a model is truncated, or null when it is not. The engine
+ * flags any file under 90% of its catalog size as `Corrupted`; that row is
+ * neither usable nor missing, so it needs its own actions rather than falling
+ * through to "not downloaded".
+ *
+ * Decimal MB, matching how the catalog's `size_mb` was derived.
+ */
+export function corruptedSizeMb(status: ModelStatus): number | null {
+  return typeof status === 'object' && 'Corrupted' in status
+    ? Math.round(status.Corrupted.file_size / 1_000_000)
+    : null;
 }
 
 export function downloadProgress(status: ModelStatus): number {

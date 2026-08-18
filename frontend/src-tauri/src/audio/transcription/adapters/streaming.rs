@@ -161,6 +161,7 @@ impl CommittedCursor {
             // bought was a running mean over the whole session, so every line
             // carried the same number anyway.
             confidence: None,
+            speaker: None,
         })
     }
 }

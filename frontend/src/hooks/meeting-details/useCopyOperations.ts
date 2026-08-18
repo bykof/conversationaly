@@ -3,6 +3,8 @@ import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
+import { withSpeaker } from '@/lib/speaker';
+import { useSpeakerNames } from '@/hooks/useSpeakerNames';
 
 interface UseCopyOperationsProps {
   meeting: any;
@@ -19,6 +21,7 @@ export function useCopyOperations({
   aiSummary,
   blockNoteSummaryRef,
 }: UseCopyOperationsProps) {
+  const { speakerNames } = useSpeakerNames(meeting?.id);
 
   // Helper function to fetch ALL transcripts for copying (not just paginated data)
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {
@@ -85,7 +88,10 @@ export function useCopyOperations({
     const header = `# Transcript of the Meeting: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
     const date = `## Date: ${new Date(meeting.created_at).toLocaleDateString()}\n\n`;
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}`)
+      .map(
+        t =>
+          `${formatTime(t.audio_start_time, t.timestamp)} ${withSpeaker(t.text, t.speaker, speakerNames)}`
+      )
       .join('\n');
 
     await navigator.clipboard.writeText(header + date + fullTranscript);

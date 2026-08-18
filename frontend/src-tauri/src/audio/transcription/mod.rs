@@ -25,7 +25,7 @@ use crate::audio::AudioChunk;
 use crate::transcribe_engine::TRANSCRIBE_ENGINE;
 use log::{error, info};
 use tauri::{AppHandle, Runtime};
-use transcribe_cpp::{RunOptions, StreamOptions};
+use transcribe_cpp::{Diarize, RunOptions, StreamOptions};
 
 pub use adapters::tauri_sink::{reset_speech_detected_flag, TranscriptPartial, TranscriptUpdate};
 
@@ -82,18 +82,25 @@ pub fn start_transcription_task<R: Runtime>(
         };
 
         let streaming = session.model().capabilities().supports_streaming;
+        let model_name = engine.get_current_model().await;
+        let diarizes = model_name.as_deref().is_some_and(crate::config::model_diarizes);
         info!(
-            "🎙️ Live transcription starting (model {:?}, language {:?}, path {})",
-            engine.get_current_model().await,
+            "🎙️ Live transcription starting (model {:?}, language {:?}, path {}, speakers {})",
+            model_name,
             language,
-            if streaming { "stream" } else { "VAD + batch" }
+            if streaming { "stream" } else { "VAD + batch" },
+            if diarizes { "on" } else { "off" }
         );
 
         // feed()/run()/finalize() are blocking native calls, so the whole loop
         // lives on a blocking thread rather than stalling the async reactor.
         let joined = tokio::task::spawn_blocking(move || {
             let mut session = session;
-            let run_options = RunOptions { language, ..Default::default() };
+            let run_options = RunOptions {
+                language,
+                diarize: if diarizes { Diarize::On } else { Diarize::Default },
+                ..Default::default()
+            };
             // One wrap here covers both decode paths below, because both reach
             // the user through this sink. Instrumentation belongs at the
             // composition root for the same reason adapter choice does.
@@ -116,7 +123,10 @@ pub fn start_transcription_task<R: Runtime>(
                     }
                 }
             } else {
-                match SegmentedTranscriber::new(Decoder::Local { session, run_options }) {
+                match SegmentedTranscriber::with_attribution(
+                    Decoder::Local { session, run_options },
+                    diarizes,
+                ) {
                     Ok(transcriber) => service::run(transcriber, sink, receiver),
                     Err(e) => {
                         TauriSink::fatal(&app, &format!("Failed to start speech detection: {e}"))

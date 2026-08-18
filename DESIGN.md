@@ -200,8 +200,12 @@ numeric readout instead. Reduced motion must not remove information.
 
 Semantic scale only. No arbitrary values.
 
-`--z-dropdown 100` · `--z-sticky 200` · `--z-rail 300` · `--z-overlay 400` ·
-`--z-modal 500` · `--z-toast 600` · `--z-tooltip 700`
+`--z-sticky 200` · `--z-rail 300` · `--z-overlay 400` · `--z-modal 500` ·
+`--z-dropdown 550` · `--z-toast 600` · `--z-tooltip 700`
+
+Transient layers — dropdown, select, popover, tooltip — sit **above** modal.
+They portal to `<body>`, so a menu opened inside a dialog is a sibling of the
+dialog, not a child: below it means invisible.
 
 ## Component rules
 

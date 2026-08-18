@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { getVersion } from '@tauri-apps/api/app';
+import { useAppVersion } from '@/hooks/useAppVersion';
 import { UpdateDialog } from './UpdateDialog';
 import { updateService, UpdateInfo } from '@/services/updateService';
 import { Button } from './ui/button';
@@ -18,14 +18,10 @@ const FACTS = [
 ] as const;
 
 export function About() {
-  const [currentVersion, setCurrentVersion] = useState<string>('1.0.0');
+  const currentVersion = useAppVersion();
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
-
-  useEffect(() => {
-    getVersion().then(setCurrentVersion).catch(console.error);
-  }, []);
 
   const handleCheckForUpdates = async () => {
     setIsChecking(true);

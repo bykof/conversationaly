@@ -32,6 +32,7 @@ pub struct TranscriptChunk {
     /// carries no token probabilities. The UI omits the badge rather than
     /// painting a made-up number on real text.
     pub confidence: Option<f32>,
+    pub speaker: Option<String>,
 }
 
 impl TranscriptChunk {
@@ -71,4 +72,6 @@ pub trait Transcriber: Send {
 
     /// Input has ended. Emit whatever is still held back.
     fn finish(&mut self, sink: &mut dyn TranscriptSink) -> Result<()>;
+
+    fn note_levels(&mut self, _start_s: f64, _mic_rms: f32, _sys_rms: f32) {}
 }

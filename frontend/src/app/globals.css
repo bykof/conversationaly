@@ -99,11 +99,16 @@
     --rail: var(--rail-w);
 
     /* --- z-index -------------------------------------------------------- */
-    --z-dropdown: 100;
     --z-sticky: 200;
     --z-rail: 300;
     --z-overlay: 400;
     --z-modal: 500;
+    /* Above modal, not below it. Select, dropdown and popover all portal to
+       <body>, so a menu opened from inside a dialog is a sibling of it — at 100
+       it painted behind the dialog panel, which is why the retranscribe
+       language and model pickers looked frozen. A transient layer belongs above
+       whatever opened it. */
+    --z-dropdown: 550;
     --z-toast: 600;
     --z-tooltip: 700;
 

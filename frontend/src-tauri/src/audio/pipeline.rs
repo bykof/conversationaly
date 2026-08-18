@@ -864,6 +864,8 @@ impl AudioCapture {
             timestamp,
             chunk_id,
             device_type: self.device_type.clone(),
+            mic_rms: 0.0,
+            sys_rms: 0.0,
         };
 
         // NOTE: Raw audio is NOT sent to recording saver to prevent echo
@@ -1121,6 +1123,8 @@ impl AudioPipeline {
                 timestamp: self.transcription_samples_sent as f64 / 16000.0,
                 chunk_id: self.chunk_id_counter,
                 device_type: DeviceType::Microphone, // Mixed audio
+                mic_rms: rms(mic_window),
+                sys_rms: rms(sys_window),
             };
             self.transcription_samples_sent += transcription_chunk.data.len() as u64;
 
@@ -1147,6 +1151,8 @@ impl AudioPipeline {
                 chunk_id: self.chunk_id_counter,
                 device_type: DeviceType::Microphone, // Mixed audio
                 data: mixed,
+                mic_rms: 0.0,
+                sys_rms: 0.0,
             };
             self.mixed_samples_sent += recording_chunk.data.len() as u64;
             let _ = sender.send(recording_chunk);
@@ -1281,6 +1287,8 @@ impl AudioPipelineManager {
                 timestamp: 0.0,
                 chunk_id: u64::MAX, // Special ID to indicate flush
                 device_type: super::recording_state::DeviceType::Microphone,
+                mic_rms: 0.0,
+                sys_rms: 0.0,
             };
 
             if let Err(e) = sender.send(flush_chunk) {
@@ -1301,6 +1309,8 @@ impl AudioPipelineManager {
                         timestamp: 0.0,
                         chunk_id: u64::MAX - (i as u64),
                         device_type: super::recording_state::DeviceType::Microphone,
+                        mic_rms: 0.0,
+                        sys_rms: 0.0,
                     };
                     let _ = sender.send(additional_flush);
                 }
@@ -1397,4 +1407,10 @@ mod tests {
         assert_eq!(rb.windows, 3);
         assert_eq!(rb.sys_pad, (w * 3) as u64, "missing system audio mixes as silence");
     }
+}
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|&x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
 }

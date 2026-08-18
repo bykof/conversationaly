@@ -22,6 +22,8 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 /// Meeting metadata structure
@@ -163,6 +165,7 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            speaker: None,
         };
         self.add_transcript_segment(segment);
     }
@@ -371,9 +374,17 @@ impl RecordingSaver {
 
         // Human-readable mirror of the same segments. Best-effort: the JSON is
         // what the app reads back, so a failed .md must not fail the recording.
-        let md_segments: Vec<(f64, &str)> = segments_clone
+        let md_segments: Vec<(f64, String)> = segments_clone
             .iter()
-            .map(|s| (s.audio_start_time, s.text.as_str()))
+            .map(|s| {
+                let text = match &s.speaker {
+                    Some(speaker) => {
+                        format!("{}: {}", super::common::speaker_label(speaker), s.text)
+                    }
+                    None => s.text.clone(),
+                };
+                (s.audio_start_time, text)
+            })
             .collect();
         if let Err(e) = super::common::write_transcript_md(
             folder,

@@ -37,11 +37,11 @@ pub fn is_builtin_transcript_provider(provider: &str) -> bool {
 /// no VAD segmentation on the live path.
 pub const DEFAULT_TRANSCRIBE_MODEL: &str = "nemotron-3.5-asr-streaming-0.6b-q8";
 
-/// Models shown above the "All models" disclosure in the picker.
+/// Models the picker marks "Recommended". Every catalog row is listed and
+/// selectable — this only decides which ones carry the label.
 ///
 /// The live entries are streaming-native; the import entries are batch-only and
-/// only worth their latency on a file. Everything else in the catalog is still
-/// selectable, just collapsed.
+/// only worth their latency on a file.
 pub const RECOMMENDED_LIVE_MODELS: &[&str] = &[
     "nemotron-3.5-asr-streaming-0.6b-q8",
     "nemotron-3.5-asr-streaming-0.6b-q4",
@@ -72,6 +72,16 @@ pub struct TranscribeModel {
     pub filename: &'static str,
     pub size_mb: u32,
     pub accuracy: &'static str,
+    /// Measured word error rate for this exact quantization, from the model
+    /// card's own table. `None` when the card publishes none.
+    ///
+    /// Shown as a number in the picker, so it travels with `wer_set`: 1.27% on
+    /// English read speech and 5.50% on Russian are not two points on one scale,
+    /// and without the set beside it the smaller number reads as the better
+    /// model. `accuracy` above is this number bucketed.
+    pub wer: Option<f32>,
+    /// The evaluation set `wer` was measured on; empty when `wer` is `None`.
+    pub wer_set: &'static str,
     pub speed: &'static str,
     /// Whether this variant can drive `Session::stream()`.
     ///
@@ -80,9 +90,12 @@ pub struct TranscribeModel {
     /// `Capabilities::supports_streaming` on the loaded model, which is read
     /// from GGUF metadata and cannot drift.
     pub streaming: bool,
-    /// Human-readable coverage for the picker before the model is downloaded.
-    /// Once loaded, `Capabilities::languages` is authoritative.
-    pub languages: &'static str,
+    /// The model's own `general.languages` GGUF metadata, harvested from the
+    /// file header at generation time. Codes rather than prose, because the UI
+    /// renders names from them and a language filter needs the list itself.
+    /// The blurb this replaced drifted: it claimed 39 locales for nemotron-3.5,
+    /// whose GGUF says 32.
+    pub languages: &'static [&'static str],
     pub description: &'static str,
 }
 
@@ -102,9 +115,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "moonshine-streaming-medium-Q8_0.gguf",
         size_mb: 282,
         accuracy: "Good",
+        wer: Some(2.16),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Moonshine Streaming",
     },
     TranscribeModel {
@@ -114,9 +129,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "moonshine-streaming-small-Q8_0.gguf",
         size_mb: 189,
         accuracy: "Good",
+        wer: Some(2.54),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Moonshine Streaming",
     },
     TranscribeModel {
@@ -126,9 +143,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "moonshine-streaming-tiny-Q8_0.gguf",
         size_mb: 48,
         accuracy: "Decent",
+        wer: Some(4.52),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Moonshine Streaming",
     },
     TranscribeModel {
@@ -138,9 +157,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "multitalker-parakeet-streaming-0.6b-v1-Q4_K_M.gguf",
         size_mb: 478,
         accuracy: "Good",
+        wer: Some(2.18),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Multitalker Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -150,9 +171,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
         size_mb: 734,
         accuracy: "Good",
+        wer: Some(2.18),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Multitalker Parakeet",
     },
     TranscribeModel {
@@ -161,10 +184,12 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         hf_repo: "nemotron-3.5-asr-streaming-0.6b-gguf",
         filename: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
         size_mb: 473,
-        accuracy: "High",
+        accuracy: "Good",
+        wer: Some(3.28),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "Multilingual — 39 locales",
+        languages: &["en-US", "en-GB", "es-US", "es-ES", "fr-FR", "fr-CA", "it-IT", "pt-BR", "pt-PT", "nl-NL", "de-DE", "tr-TR", "ru-RU", "ar-AR", "hi-IN", "ja-JP", "ko-KR", "vi-VN", "uk-UA", "pl-PL", "sv-SE", "cs-CZ", "nb-NO", "da-DK", "bg-BG", "fi-FI", "hr-HR", "sk-SK", "zh-CN", "hu-HU", "ro-RO", "et-EE"],
         description: "Nemotron 3.5 — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -173,10 +198,12 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         hf_repo: "nemotron-3.5-asr-streaming-0.6b-gguf",
         filename: "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
         size_mb: 716,
-        accuracy: "High",
+        accuracy: "Good",
+        wer: Some(3.06),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "Multilingual — 39 locales",
+        languages: &["en-US", "en-GB", "es-US", "es-ES", "fr-FR", "fr-CA", "it-IT", "pt-BR", "pt-PT", "nl-NL", "de-DE", "tr-TR", "ru-RU", "ar-AR", "hi-IN", "ja-JP", "ko-KR", "vi-VN", "uk-UA", "pl-PL", "sv-SE", "cs-CZ", "nb-NO", "da-DK", "bg-BG", "fi-FI", "hr-HR", "sk-SK", "zh-CN", "hu-HU", "ro-RO", "et-EE"],
         description: "Nemotron 3.5",
     },
     TranscribeModel {
@@ -186,9 +213,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "nemotron-speech-streaming-en-0.6b-Q4_K_M.gguf",
         size_mb: 453,
         accuracy: "Good",
+        wer: Some(2.38),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Nemotron Speech — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -198,9 +227,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
         size_mb: 696,
         accuracy: "Good",
+        wer: Some(2.31),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Nemotron Speech",
     },
     TranscribeModel {
@@ -210,9 +241,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-unified-en-0.6b-Q4_K_M.gguf",
         size_mb: 477,
         accuracy: "High",
+        wer: Some(1.62),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet Unified — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -222,9 +255,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-unified-en-0.6b-Q8_0.gguf",
         size_mb: 731,
         accuracy: "High",
+        wer: Some(1.60),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: true,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet Unified",
     },
     TranscribeModel {
@@ -234,9 +269,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf",
         size_mb: 2898,
         accuracy: "Good",
+        wer: Some(2.08),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: true,
-        languages: "Multilingual",
+        languages: &["en", "fr", "es", "de", "ru", "zh", "ja", "it", "pt", "nl", "ar", "hi", "ko"],
         description: "Voxtral Realtime — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -246,9 +283,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Voxtral-Mini-4B-Realtime-2602-Q8_0.gguf",
         size_mb: 4844,
         accuracy: "Good",
+        wer: Some(2.07),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: true,
-        languages: "Multilingual",
+        languages: &["en", "fr", "es", "de", "ru", "zh", "ja", "it", "pt", "nl", "ar", "hi", "ko"],
         description: "Voxtral Realtime",
     },
     TranscribeModel {
@@ -258,9 +297,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-180m-flash-Q8_0.gguf",
         size_mb: 208,
         accuracy: "High",
+        wer: Some(1.93),
+        wer_set: "LibriSpeech test-clean",
         speed: "Fast",
         streaming: false,
-        languages: "Multilingual — 4 languages",
+        languages: &["en", "de", "es", "fr"],
         description: "Canary",
     },
     TranscribeModel {
@@ -270,9 +311,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-flash-Q4_K_M.gguf",
         size_mb: 646,
         accuracy: "High",
+        wer: Some(1.59),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 4 languages",
+        languages: &["en", "de", "es", "fr"],
         description: "Canary — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -282,9 +325,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-flash-Q8_0.gguf",
         size_mb: 1024,
         accuracy: "High",
+        wer: Some(1.62),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 4 languages",
+        languages: &["en", "de", "es", "fr"],
         description: "Canary",
     },
     TranscribeModel {
@@ -294,9 +339,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-Q4_K_M.gguf",
         size_mb: 696,
         accuracy: "High",
+        wer: Some(1.55),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 4 languages",
+        languages: &["en", "de", "es", "fr"],
         description: "Canary — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -306,9 +353,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-Q8_0.gguf",
         size_mb: 1126,
         accuracy: "High",
+        wer: Some(1.55),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 4 languages",
+        languages: &["en", "de", "es", "fr"],
         description: "Canary",
     },
     TranscribeModel {
@@ -318,9 +367,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-v2-Q4_K_M.gguf",
         size_mb: 701,
         accuracy: "High",
+        wer: Some(1.91),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 25 European languages",
+        languages: &["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"],
         description: "Canary v2 — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -330,9 +381,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-1b-v2-Q8_0.gguf",
         size_mb: 1126,
         accuracy: "High",
+        wer: Some(1.91),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 25 European languages",
+        languages: &["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"],
         description: "Canary v2",
     },
     TranscribeModel {
@@ -342,9 +395,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-qwen-2.5b-Q4_K_M.gguf",
         size_mb: 1659,
         accuracy: "High",
+        wer: Some(1.63),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Canary-Qwen — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -354,9 +409,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "canary-qwen-2.5b-Q8_0.gguf",
         size_mb: 2673,
         accuracy: "High",
+        wer: Some(1.63),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Canary-Qwen",
     },
     TranscribeModel {
@@ -366,9 +423,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "cohere-transcribe-03-2026-Q4_K_M.gguf",
         size_mb: 1587,
         accuracy: "High",
+        wer: Some(1.25),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 14 languages",
+        languages: &["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"],
         description: "Cohere Transcribe — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -378,9 +437,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "cohere-transcribe-03-2026-Q8_0.gguf",
         size_mb: 2468,
         accuracy: "High",
+        wer: Some(1.27),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 14 languages",
+        languages: &["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"],
         description: "Cohere Transcribe",
     },
     TranscribeModel {
@@ -390,9 +451,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Fun-ASR-MLT-Nano-2512-Q4_K_M.gguf",
         size_mb: 531,
         accuracy: "High",
+        wer: Some(1.89),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 31 languages",
+        languages: &["zh", "en", "yue", "ja", "ko", "vi", "id", "th", "ms", "tl", "ar", "hi", "bg", "hr", "cs", "da", "nl", "et", "fi", "el", "hu", "ga", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "sv"],
         description: "FunASR Nano MLT — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -402,9 +465,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Fun-ASR-MLT-Nano-2512-Q8_0.gguf",
         size_mb: 850,
         accuracy: "High",
+        wer: Some(1.74),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 31 languages",
+        languages: &["zh", "en", "yue", "ja", "ko", "vi", "id", "th", "ms", "tl", "ar", "hi", "bg", "hr", "cs", "da", "nl", "et", "fi", "el", "hu", "ga", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "sv"],
         description: "FunASR Nano MLT",
     },
     TranscribeModel {
@@ -414,9 +479,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Fun-ASR-Nano-2512-Q4_K_M.gguf",
         size_mb: 531,
         accuracy: "High",
+        wer: Some(1.92),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Chinese and English",
+        languages: &["zh", "en", "ja"],
         description: "FunASR Nano — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -426,9 +493,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Fun-ASR-Nano-2512-Q8_0.gguf",
         size_mb: 850,
         accuracy: "High",
+        wer: Some(1.79),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Chinese and English",
+        languages: &["zh", "en", "ja"],
         description: "FunASR Nano",
     },
     TranscribeModel {
@@ -438,9 +507,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "gigaam-v3-ctc-Q8_0.gguf",
         size_mb: 259,
         accuracy: "Decent",
+        wer: Some(8.40),
+        wer_set: "FLEURS ru (Russian)",
         speed: "Fast",
         streaming: false,
-        languages: "Russian",
+        languages: &["ru"],
         description: "GigaAM",
     },
     TranscribeModel {
@@ -450,9 +521,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "gigaam-v3-e2e-ctc-Q8_0.gguf",
         size_mb: 260,
         accuracy: "Decent",
+        wer: Some(5.50),
+        wer_set: "FLEURS ru (Russian)",
         speed: "Fast",
         streaming: false,
-        languages: "Russian",
+        languages: &["ru"],
         description: "GigaAM",
     },
     TranscribeModel {
@@ -462,9 +535,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "gigaam-v3-e2e-rnnt-Q8_0.gguf",
         size_mb: 261,
         accuracy: "Decent",
+        wer: Some(5.36),
+        wer_set: "FLEURS ru (Russian)",
         speed: "Fast",
         streaming: false,
-        languages: "Russian",
+        languages: &["ru"],
         description: "GigaAM",
     },
     TranscribeModel {
@@ -474,9 +549,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "gigaam-v3-rnnt-Q8_0.gguf",
         size_mb: 260,
         accuracy: "Decent",
+        wer: Some(8.08),
+        wer_set: "FLEURS ru (Russian)",
         speed: "Fast",
         streaming: false,
-        languages: "Russian",
+        languages: &["ru"],
         description: "GigaAM",
     },
     TranscribeModel {
@@ -486,9 +563,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-4.0-1b-speech-Q4_K_M.gguf",
         size_mb: 1638,
         accuracy: "High",
+        wer: Some(1.48),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt", "ja"],
         description: "Granite Speech — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -498,9 +577,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-4.0-1b-speech-Q8_0.gguf",
         size_mb: 2621,
         accuracy: "High",
+        wer: Some(1.44),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt", "ja"],
         description: "Granite Speech",
     },
     TranscribeModel {
@@ -510,9 +591,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-nar-Q4_K_M.gguf",
         size_mb: 1485,
         accuracy: "High",
+        wer: Some(1.35),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt"],
         description: "Granite Speech — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -522,9 +605,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-nar-Q8_0.gguf",
         size_mb: 2386,
         accuracy: "High",
+        wer: Some(1.29),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt"],
         description: "Granite Speech",
     },
     TranscribeModel {
@@ -534,9 +619,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-plus-Q4_K_M.gguf",
         size_mb: 1526,
         accuracy: "High",
+        wer: Some(1.56),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt"],
         description: "Granite Speech — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -546,9 +633,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-plus-Q8_0.gguf",
         size_mb: 2406,
         accuracy: "High",
+        wer: Some(1.50),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt"],
         description: "Granite Speech",
     },
     TranscribeModel {
@@ -558,9 +647,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-Q4_K_M.gguf",
         size_mb: 1638,
         accuracy: "High",
+        wer: Some(1.37),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt", "ja"],
         description: "Granite Speech — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -570,9 +661,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "granite-speech-4.1-2b-Q8_0.gguf",
         size_mb: 2621,
         accuracy: "High",
+        wer: Some(1.32),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual",
+        languages: &["en", "fr", "de", "es", "pt", "ja"],
         description: "Granite Speech",
     },
     TranscribeModel {
@@ -582,9 +675,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "moonshine-base-Q8_0.gguf",
         size_mb: 74,
         accuracy: "Good",
+        wer: Some(3.26),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Moonshine",
     },
     TranscribeModel {
@@ -594,9 +689,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "moonshine-tiny-Q8_0.gguf",
         size_mb: 34,
         accuracy: "Decent",
+        wer: Some(4.60),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Moonshine",
     },
     TranscribeModel {
@@ -606,9 +703,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "MOSS-Transcribe-Diarize-Q4_K_M.gguf",
         size_mb: 617,
         accuracy: "Good",
+        wer: Some(2.59),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English and Chinese",
+        languages: &["en", "zh"],
         description: "MOSS Transcribe-Diarize — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -618,9 +717,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "MOSS-Transcribe-Diarize-Q8_0.gguf",
         size_mb: 987,
         accuracy: "High",
+        wer: Some(1.93),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English and Chinese",
+        languages: &["en", "zh"],
         description: "MOSS Transcribe-Diarize",
     },
     TranscribeModel {
@@ -630,9 +731,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-ctc-0.6b-Q4_K_M.gguf",
         size_mb: 469,
         accuracy: "High",
+        wer: Some(1.90),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -642,9 +745,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-ctc-0.6b-Q8_0.gguf",
         size_mb: 722,
         accuracy: "High",
+        wer: Some(1.87),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -654,9 +759,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-ctc-1.1b-Q4_K_M.gguf",
         size_mb: 818,
         accuracy: "High",
+        wer: Some(1.90),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -666,9 +773,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-ctc-1.1b-Q8_0.gguf",
         size_mb: 1290,
         accuracy: "High",
+        wer: Some(1.85),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -678,9 +787,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-rnnt-0.6b-Q4_K_M.gguf",
         size_mb: 476,
         accuracy: "High",
+        wer: Some(1.59),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -690,9 +801,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-rnnt-0.6b-Q8_0.gguf",
         size_mb: 730,
         accuracy: "High",
+        wer: Some(1.62),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -702,9 +815,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-rnnt-1.1b-Q4_K_M.gguf",
         size_mb: 825,
         accuracy: "High",
+        wer: Some(1.41),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -714,9 +829,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-rnnt-1.1b-Q8_0.gguf",
         size_mb: 1300,
         accuracy: "High",
+        wer: Some(1.46),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -726,9 +843,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-0.6b-v2-Q4_K_M.gguf",
         size_mb: 483,
         accuracy: "High",
+        wer: Some(1.72),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -738,9 +857,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-0.6b-v2-Q8_0.gguf",
         size_mb: 730,
         accuracy: "High",
+        wer: Some(1.69),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -750,9 +871,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-0.6b-v3-Q4_K_M.gguf",
         size_mb: 502,
         accuracy: "High",
+        wer: Some(1.98),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 25 European languages",
+        languages: &["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk"],
         description: "Parakeet TDT v3 — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -762,9 +885,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-0.6b-v3-Q8_0.gguf",
         size_mb: 740,
         accuracy: "High",
+        wer: Some(1.94),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 25 European languages",
+        languages: &["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk"],
         description: "Parakeet TDT v3",
     },
     TranscribeModel {
@@ -774,9 +899,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-1.1b-Q4_K_M.gguf",
         size_mb: 825,
         accuracy: "High",
+        wer: Some(1.42),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -786,9 +913,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt-1.1b-Q8_0.gguf",
         size_mb: 1300,
         accuracy: "High",
+        wer: Some(1.38),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -798,9 +927,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt_ctc-1.1b-Q4_K_M.gguf",
         size_mb: 825,
         accuracy: "High",
+        wer: Some(1.91),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -810,9 +941,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt_ctc-1.1b-Q8_0.gguf",
         size_mb: 1300,
         accuracy: "High",
+        wer: Some(1.87),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -822,9 +955,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "parakeet-tdt_ctc-110m-Q8_0.gguf",
         size_mb: 135,
         accuracy: "Good",
+        wer: Some(2.43),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Parakeet",
     },
     TranscribeModel {
@@ -834,9 +969,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Qwen3-ASR-0.6B-Q4_K_M.gguf",
         size_mb: 654,
         accuracy: "Good",
+        wer: Some(2.26),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 30 languages",
+        languages: &["zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja", "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "ro", "hu", "mk"],
         description: "Qwen3-ASR — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -846,9 +983,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Qwen3-ASR-0.6B-Q8_0.gguf",
         size_mb: 811,
         accuracy: "Good",
+        wer: Some(2.11),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 30 languages",
+        languages: &["zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja", "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "ro", "hu", "mk"],
         description: "Qwen3-ASR",
     },
     TranscribeModel {
@@ -858,9 +997,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Qwen3-ASR-1.7B-Q4_K_M.gguf",
         size_mb: 1259,
         accuracy: "High",
+        wer: Some(1.81),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 30 languages",
+        languages: &["zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja", "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "ro", "hu", "mk"],
         description: "Qwen3-ASR — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -870,9 +1011,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Qwen3-ASR-1.7B-Q8_0.gguf",
         size_mb: 2084,
         accuracy: "High",
+        wer: Some(1.61),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 30 languages",
+        languages: &["zh", "en", "yue", "ar", "de", "fr", "es", "pt", "id", "it", "ko", "ru", "th", "vi", "ja", "tr", "hi", "ms", "nl", "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "ro", "hu", "mk"],
         description: "Qwen3-ASR",
     },
     TranscribeModel {
@@ -882,9 +1025,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "SenseVoiceSmall-Q8_0.gguf",
         size_mb: 241,
         accuracy: "Good",
+        wer: Some(3.13),
+        wer_set: "LibriSpeech test-clean",
         speed: "Fast",
         streaming: false,
-        languages: "Multilingual — 5 languages",
+        languages: &["zh", "yue", "en", "ja", "ko"],
         description: "SenseVoice",
     },
     TranscribeModel {
@@ -894,9 +1039,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Voxtral-Mini-3B-2507-Q4_K_M.gguf",
         size_mb: 3052,
         accuracy: "High",
+        wer: Some(1.94),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 8 languages",
+        languages: &["en", "fr", "de", "es", "it", "pt", "nl", "hi"],
         description: "Voxtral — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -906,9 +1053,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "Voxtral-Mini-3B-2507-Q8_0.gguf",
         size_mb: 5120,
         accuracy: "High",
+        wer: Some(1.87),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 8 languages",
+        languages: &["en", "fr", "de", "es", "it", "pt", "nl", "hi"],
         description: "Voxtral",
     },
     TranscribeModel {
@@ -918,9 +1067,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-base-Q8_0.gguf",
         size_mb: 81,
         accuracy: "Decent",
+        wer: Some(5.12),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -930,9 +1081,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-base.en-Q8_0.gguf",
         size_mb: 81,
         accuracy: "Good",
+        wer: Some(4.16),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -942,9 +1095,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-Q4_K_M.gguf",
         size_mb: 950,
         accuracy: "Good",
+        wer: Some(2.67),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -954,9 +1109,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-Q8_0.gguf",
         size_mb: 1587,
         accuracy: "Good",
+        wer: Some(2.74),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -966,9 +1123,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v2-Q4_K_M.gguf",
         size_mb: 950,
         accuracy: "Good",
+        wer: Some(2.46),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -978,9 +1137,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v2-Q8_0.gguf",
         size_mb: 1587,
         accuracy: "Good",
+        wer: Some(2.65),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -990,9 +1151,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v3-Q4_K_M.gguf",
         size_mb: 951,
         accuracy: "High",
+        wer: Some(1.86),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -1002,9 +1165,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v3-Q8_0.gguf",
         size_mb: 1587,
         accuracy: "High",
+        wer: Some(1.82),
+        wer_set: "LibriSpeech test-clean",
         speed: "Slow",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1014,9 +1179,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v3-turbo-Q4_K_M.gguf",
         size_mb: 511,
         accuracy: "Good",
+        wer: Some(2.04),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -1026,9 +1193,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-large-v3-turbo-Q8_0.gguf",
         size_mb: 845,
         accuracy: "Good",
+        wer: Some(2.01),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1038,9 +1207,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-medium-Q4_K_M.gguf",
         size_mb: 481,
         accuracy: "Good",
+        wer: Some(2.59),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -1050,9 +1221,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-medium-Q8_0.gguf",
         size_mb: 793,
         accuracy: "Good",
+        wer: Some(2.64),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1062,9 +1235,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-medium.en-Q4_K_M.gguf",
         size_mb: 481,
         accuracy: "Good",
+        wer: Some(2.91),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Whisper — smaller download, lower memory use",
     },
     TranscribeModel {
@@ -1074,9 +1249,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-medium.en-Q8_0.gguf",
         size_mb: 793,
         accuracy: "Good",
+        wer: Some(2.72),
+        wer_set: "LibriSpeech test-clean",
         speed: "Medium",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1086,9 +1263,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-small-Q8_0.gguf",
         size_mb: 257,
         accuracy: "Good",
+        wer: Some(3.33),
+        wer_set: "LibriSpeech test-clean",
         speed: "Fast",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1098,9 +1277,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-small.en-Q8_0.gguf",
         size_mb: 257,
         accuracy: "Good",
+        wer: Some(3.09),
+        wer_set: "LibriSpeech test-clean",
         speed: "Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1110,9 +1291,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-tiny-Q8_0.gguf",
         size_mb: 44,
         accuracy: "Decent",
+        wer: Some(7.53),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "Multilingual — 99 languages",
+        languages: &["af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "haw", "ha", "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh"],
         description: "Whisper",
     },
     TranscribeModel {
@@ -1122,9 +1305,11 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
         filename: "whisper-tiny.en-Q8_0.gguf",
         size_mb: 44,
         accuracy: "Decent",
+        wer: Some(5.72),
+        wer_set: "LibriSpeech test-clean",
         speed: "Very Fast",
         streaming: false,
-        languages: "English only",
+        languages: &["en"],
         description: "Whisper",
     },
     // END GENERATED
@@ -1134,12 +1319,91 @@ pub const TRANSCRIBE_MODEL_CATALOG: &[TranscribeModel] = &[
 pub const TRANSCRIBE_MODEL_BASE_URL: &str = "https://huggingface.co/handy-computer";
 
 /// Look up a catalog row by its stored name.
+/// Catalog variants that attribute speakers, by name prefix so every
+/// quantization tier is covered.
+///
+/// Not the family: `Granite Speech` holds three variants and only `-plus`
+/// diarizes — the base does not advertise it and `-nar` documents its absence.
+/// Not `Capabilities` either, which carries no diarization bit to read.
+pub const DIARIZING_VARIANTS: &[&str] =
+    &["granite-speech-4.1-2b-plus", "moss-transcribe-diarize"];
+
+pub fn model_diarizes(name: &str) -> bool {
+    transcribe_model(name)
+        .is_some_and(|m| DIARIZING_VARIANTS.iter().any(|v| m.name.starts_with(v)))
+}
+
 pub fn transcribe_model(name: &str) -> Option<&'static TranscribeModel> {
     TRANSCRIBE_MODEL_CATALOG.iter().find(|m| m.name == name)
 }
 
-/// Whether this model belongs above the "All models" disclosure.
+/// Whether the picker labels this model "Recommended".
 pub fn is_recommended_model(name: &str) -> bool {
     RECOMMENDED_LIVE_MODELS.contains(&name) || RECOMMENDED_IMPORT_MODELS.contains(&name)
 }
 
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exactly_the_documented_variants_diarize() {
+        let diarizing: Vec<&str> = super::TRANSCRIBE_MODEL_CATALOG
+            .iter()
+            .map(|m| m.name)
+            .filter(|n| super::model_diarizes(n))
+            .collect();
+
+        assert_eq!(
+            diarizing,
+            vec![
+                "granite-speech-4.1-2b-plus-q4",
+                "granite-speech-4.1-2b-plus-q8",
+                "moss-transcribe-diarize-q4",
+                "moss-transcribe-diarize-q8",
+            ],
+            "the catalog is generated; a regenerated row must not silently gain \
+             or lose speaker attribution"
+        );
+
+        for sibling in ["granite-speech-4.1-2b-q8", "granite-speech-4.1-2b-nar-q8"] {
+            assert!(
+                !super::model_diarizes(sibling),
+                "{sibling} shares the Granite Speech family but does not diarize"
+            );
+        }
+    }
+
+    use super::*;
+
+    /// The catalog is generated, so the risk is not a typo but a shifted column:
+    /// `wer` and `accuracy` come from the same measurement, and `wer_set` only
+    /// exists when `wer` does. Tying them together here means any regeneration
+    /// that mangles the rows fails before the UI shows a wrong number.
+    #[test]
+    fn generated_wer_agrees_with_its_accuracy_bucket() {
+        for m in TRANSCRIBE_MODEL_CATALOG {
+            assert_eq!(
+                m.wer.is_some(),
+                !m.wer_set.is_empty(),
+                "{}: a WER without its eval set (or vice versa)",
+                m.name
+            );
+            let Some(wer) = m.wer else { continue };
+            // Wider than the real spread (1.25%–8.40%) on purpose: this catches a
+            // number read out of the size or parameter column, not a slow model.
+            assert!((0.1..30.0).contains(&wer), "{}: implausible WER {wer}", m.name);
+            let bucket = if wer < 2.0 {
+                "High"
+            } else if wer < 4.5 {
+                "Good"
+            } else {
+                "Decent"
+            };
+            assert_eq!(
+                m.accuracy, bucket,
+                "{}: {wer}% is {bucket}, not {}",
+                m.name, m.accuracy
+            );
+        }
+    }
+}
