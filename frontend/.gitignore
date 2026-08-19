@@ -51,3 +51,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Visual Studio Build Tools installer — fetch from Microsoft, never commit
+vs_buildtools.exe

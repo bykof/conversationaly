@@ -121,8 +121,6 @@ pnpm run tauri:dev:cpu
 
 Architecture notes and conventions for contributors live in [CLAUDE.md](CLAUDE.md); GPU backend details in [docs/GPU_ACCELERATION.md](docs/GPU_ACCELERATION.md).
 
-> The `backend/` directory is an archived Python/FastAPI service from before the Tauri rewrite. It is unsupported and not needed to build or run the app.
-
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for project structure and guidelines.
