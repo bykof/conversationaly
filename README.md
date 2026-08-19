@@ -10,7 +10,7 @@ Records your meetings, transcribes them live, and writes the summary — on your
 
 </p>
 
-<img src="docs/imgs/meeting_transcription_summary.png" alt="Conversationaly showing a meeting transcript beside its generated summary" width="100%">
+<img src="docs/imgs/live-recording.gif" alt="Conversationaly opening, a recording starting, and the first spoken words being transcribed live" width="100%">
 
 </div>
 
@@ -91,7 +91,7 @@ On first launch, onboarding downloads one transcription model and one Gemma 4 ti
 2. The same mixed audio is resampled to 16 kHz and fed to the transcription engine, which emits transcript lines as the meeting runs.
 3. When you ask for a summary, the transcript goes to whichever LLM provider you configured — the local sidecar by default.
 
-![Live transcription while a meeting is being recorded](docs/imgs/recording.png)
+![A finished meeting: the transcript on the left, the generated summary on the right](docs/imgs/meeting_transcription_summary.png)
 
 Everything above is a local process. Cloud STT and cloud summary providers are the only paths that leave your machine, and only when you select one and supply a key.
 

@@ -1,0 +1,13 @@
+{
+  "_comment": "Spoken content for the demo GIF, written to read like ASR output of a video call: no sentence-final punctuation, the fillers left in, the odd self-correction. Swap this file (or pass --transcript <file.vtt>) to re-cut the GIF with different words.",
+  "meetingTitle": "Weekly product sync",
+  "wordsPerSecond": 4.2,
+  "segments": [
+    { "speaker": "you", "text": "okay I think we're all here so let's get started", "confidence": 0.96 },
+    { "speaker": "2", "text": "quick one before the roadmap can we talk about the transcript pane", "confidence": 0.93 },
+    { "speaker": "you", "text": "yeah go ahead that's top of my list too", "confidence": 0.95 },
+    { "speaker": "2", "text": "two people last week said the live text felt like it was lagging behind them", "confidence": 0.9 },
+    { "speaker": "3", "text": "that's the batch path it waits for the whole segment streaming commits in about a second", "confidence": 0.88 },
+    { "speaker": "you", "text": "so it's not slow it's the segment length we should say that in the model picker", "confidence": 0.94 }
+  ]
+}
