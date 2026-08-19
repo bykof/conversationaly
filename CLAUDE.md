@@ -8,13 +8,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 1. **Frontend**: Tauri-based desktop application (Rust + Next.js + TypeScript)
 2. **Rust Backend**: Tauri commands, audio capture, transcription, storage, and summarization orchestration
-3. **Legacy Backend Archive**: the old Python/FastAPI, Docker, and standalone whisper-server backend under `backend/` is archived and unsupported
 
 ### Key Technology Stack
 - **Desktop App**: Tauri 2.x (Rust) + Next.js 16 + React 19
 - **Audio Processing**: Rust (cpal, professional audio mixing)
 - **Transcription**: transcribe.cpp (GGUF on ggml) via the `transcribe-cpp` Rust bindings for ASR models, plus audio-capable LLMs (Gemma 4) through the bundled `llama-helper` sidecar (llama.cpp mtmd) — no external Ollama install
-- **App API Surface**: Tauri commands and events, not a separate FastAPI service
+- **App API Surface**: Tauri commands and events
 - **LLM Integration**: Ollama (local), Claude, Groq, OpenRouter
 
 ## Essential Development Commands
@@ -46,14 +45,6 @@ pnpm run tauri:dev:vulkan   # AMD/Intel Vulkan
 pnpm run tauri:dev:cpu      # CPU-only (no GPU)
 ```
 
-### Legacy Backend Archive
-
-**Location**: `/backend`
-
-The Python/FastAPI backend, Docker setup, and standalone whisper-server scripts are archived for historical reference and migration context only. Do not use them for current development, new installs, production deployments, or issue triage for the supported app.
-
-The archived FastAPI service had unauthenticated, development-oriented CORS behavior. Treat that behavior as obsolete legacy context, not as a supported production API.
-
 ### Service Endpoints
 - **Frontend Dev**: http://localhost:3118
 
@@ -72,7 +63,7 @@ The archived FastAPI service had unauthenticated, development-oriented CORS beha
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The current app does not require a separate FastAPI tier. Meeting persistence, local transcription, and summary orchestration are handled through the Rust/Tauri core.
+Meeting persistence, local transcription, and summary orchestration are handled through the Rust/Tauri core.
 
 ### Audio Processing Pipeline (Critical Understanding)
 
@@ -111,9 +102,9 @@ Path 2 caps its un-transcribed backlog at 30s and drops the oldest segments past
 
 **Audio LLM transcription runs in-process, not through Ollama.** `llama-helper` (the sidecar already shipped for summaries) is built with `llama-cpp-2`'s `mtmd` feature, so Gemma 4's audio conformer (`clip.audio.projector_type = gemma4a`) decodes locally. Audio crosses the sidecar's JSON-line protocol as base64 f32 little-endian PCM at 16 kHz. Audio-capable models are marked in `summary_engine::models` by carrying a `Projector` (weights + `mmproj-*-BF16.gguf`), which is also what makes them offerable for transcription — there is no separate flag to drift. BF16 projector specifically: quantized projectors degrade transcripts (llama.cpp#21421). Ollama remains a *summary* provider only.
 
-### Audio Device Modularization (Recently Completed)
+### Audio Device Modularization
 
-**Context**: The audio system was refactored from a monolithic 1028-line `core.rs` file into focused modules. See [AUDIO_MODULARIZATION_PLAN.md](AUDIO_MODULARIZATION_PLAN.md) for details.
+**Context**: The audio system was refactored from a monolithic 1028-line `core.rs` file into focused modules.
 
 ```
 audio/
@@ -303,9 +294,7 @@ RUST_LOG=app_lib::audio=debug ./clean_run.sh
 
 ### Tauri Backend Development
 
-Current app behavior should be implemented in the Rust/Tauri core, not in the archived Python backend. Add new frontend-facing behavior through Tauri commands/events and existing Rust services under `frontend/src-tauri/src`.
-
-Do not add new endpoints to `backend/app/main.py`; that FastAPI code is legacy archive material only.
+Add new frontend-facing behavior through Tauri commands/events and the existing Rust services under `frontend/src-tauri/src`.
 
 ## Testing and Debugging
 
@@ -363,7 +352,7 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 - Streaming models are real-time-native; measured RTF ~0.06 on M1 Max (Metal)
 
 ### Transcription
-- **Model Selection**: the catalog covers every family transcribe.cpp supports — ~86 rows across 16 families (see `TRANSCRIBE_MODEL_CATALOG` in config.rs). It is **generated**: edit `scripts/gen_model_catalog.py` and re-run it, never the array.
+- **Model Selection**: the catalog covers every family transcribe.cpp supports — ~86 rows across 16 families (see `TRANSCRIBE_MODEL_CATALOG` in config.rs). It is **generated**: edit `frontend/src-tauri/scripts/gen_model_catalog.py` and re-run it, never the array.
   - Default: `nemotron-3.5-asr-streaming-0.6b-q8` (multilingual, 39 locales)
   - Batch-only families are selectable for live recording too, via the VAD + batch path above
   - Excluded on purpose: `diar_streaming_sortformer_4spk-v2.1` (no text output), `medasr` (gated upstream), `voxtral-small-24b-2507` (too large)
@@ -388,21 +377,17 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 
    The sidecar has the same constraint for a different reason: one process, one loaded model. `SidecarManager::ensure_running` therefore **refuses to switch models while recording** — a summary on a different model mid-meeting would respawn the sidecar and kill the live transcription with it. A summary on the *same* model reuses the loaded weights, which is why `gemma4:e2b` — the smaller tier, and what onboarding downloads — is the default for both jobs.
 
-4. **No Separate Backend Dependency**: Meeting persistence, transcription, and LLM features are handled by the Tauri app. Do not reintroduce the archived FastAPI backend as a supported requirement.
+4. **File Paths**: Use Tauri's path APIs (`downloadDir`, etc.) for cross-platform compatibility. Never hardcode paths.
 
-5. **Legacy FastAPI Security Context**: The archived FastAPI/CORS behavior is unsupported legacy code and must not be treated as a supported production API.
+5. **Audio Permissions**: Request permissions early. macOS requires both microphone AND screen recording for system audio.
 
-6. **File Paths**: Use Tauri's path APIs (`downloadDir`, etc.) for cross-platform compatibility. Never hardcode paths.
-
-7. **Audio Permissions**: Request permissions early. macOS requires both microphone AND screen recording for system audio.
-
-8. **No text injection into other applications without a verified caret anchor**: No injection code exists today. This is a rule for whoever builds it, not a description of current behavior.
+6. **No text injection into other applications without a verified caret anchor**: No injection code exists today. This is a rule for whoever builds it, not a description of current behavior.
 
    - Never write a whole field. FluidVoice, the macOS dictation app studied for this, has Accessibility rungs that replace the target's entire `kAXValue`, and the target is sometimes picked by a hierarchy walk rather than by focus. The field it destroys need not be the one the user is typing in.
    - Those destructive rungs are reached precisely when `kAXValue` / `kAXSelectedTextRange` are unreadable: Electron apps, web views, terminals. For a desktop dictation tool that is the majority case, not the tail.
    - One occurrence is unbounded loss of someone else's document, and we leave no undo entry behind for them to recover it.
    - A verified caret anchor — insert, then read back what landed and where — is a prerequisite that gates the feature. It is not a follow-up.
-   - Do not add `enigo`, `rdev`, or a CGEventTap. Synthesizing keystrokes gives no read-back, so it cannot satisfy the anchor requirement, and it needs a blanket Accessibility grant that turns every keystroke the user types into something the app can see. (`HANDOVER.md` §5 covers the same ground for as long as that file exists.)
+   - Do not add `enigo`, `rdev`, or a CGEventTap. Synthesizing keystrokes gives no read-back, so it cannot satisfy the anchor requirement, and it needs a blanket Accessibility grant that turns every keystroke the user types into something the app can see.
 
 ## Repository-Specific Conventions
 
@@ -413,7 +398,6 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
   - `main`: Stable releases
   - `fix/*`: Bug fixes
   - `enhance/*`: Feature enhancements
-  - Current: `fix/audio-mixing` (working on audio pipeline improvements)
 
 ## Key Files Reference
 
