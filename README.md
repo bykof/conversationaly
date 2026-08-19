@@ -10,7 +10,7 @@ Records your meetings, transcribes them live, and writes the summary — on your
 
 </p>
 
-<img src="docs/imgs/meeting_transcription_summary.png" alt="Conversationaly showing a meeting transcript beside its generated summary" width="100%">
+<img src="docs/imgs/live-recording.gif" alt="Conversationaly opening, a recording starting, and the first spoken words being transcribed live" width="100%">
 
 </div>
 
