@@ -721,9 +721,16 @@ mod tests {
             TRANSCRIBE_MODEL_CATALOG.iter().any(|e| e.streaming),
             "no live-capable model left in the catalog"
         );
+        // The default is the one deliberate exception: it trades streaming for
+        // WER. Every other recommendation still has to stream, so a batch-only
+        // row cannot pick up the label by accident.
         for name in RECOMMENDED_LIVE_MODELS {
             let m = transcribe_model(name).expect("recommended live model not in catalog");
-            assert!(m.streaming, "{} is recommended for live but cannot stream", name);
+            assert!(
+                m.streaming || *name == DEFAULT_TRANSCRIBE_MODEL,
+                "{} is recommended for live but cannot stream",
+                name
+            );
         }
         for name in RECOMMENDED_IMPORT_MODELS {
             assert!(

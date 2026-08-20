@@ -352,8 +352,9 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 - Streaming models are real-time-native; measured RTF ~0.06 on M1 Max (Metal)
 
 ### Transcription
-- **Model Selection**: the catalog covers every family transcribe.cpp supports — ~86 rows across 16 families (see `TRANSCRIBE_MODEL_CATALOG` in config.rs). It is **generated**: edit `frontend/src-tauri/scripts/gen_model_catalog.py` and re-run it, never the array.
-  - Default: `nemotron-3.5-asr-streaming-0.6b-q8` (multilingual, 39 locales)
+- **Model Selection**: the catalog covers every family transcribe.cpp supports — 85 rows across 16 families (see `TRANSCRIBE_MODEL_CATALOG` in config.rs). It is **generated**: edit `frontend/src-tauri/scripts/gen_model_catalog.py` and re-run it, never the array.
+  - Default: `parakeet-tdt-0.6b-v3-q8` — lowest WER (1.94%) that still keeps up live; batch-only, so live text arrives in ~8s segments with no partials, across 25 European locales
+  - `nemotron-3.5-asr-streaming-0.6b-q8` is the streaming-native alternative: word-by-word live text and 32 locales incl. CJK/Arabic/Hindi, at 3.06% WER
   - Batch-only families are selectable for live recording too, via the VAD + batch path above
   - Excluded on purpose: `diar_streaming_sortformer_4spk-v2.1` (no text output), `medasr` (gated upstream), `voxtral-small-24b-2507` (too large)
   - Low-end machines: `moonshine-streaming-{small,tiny}` (English only)

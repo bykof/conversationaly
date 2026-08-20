@@ -37,7 +37,7 @@ It is a fork of [Meetily](https://github.com/Zackriya-Solutions/meeting-minutes)
 
 ## Features
 
-- **Local transcription** — ~87 models across 16 families (Whisper, Parakeet, Nemotron, Canary, Voxtral, Qwen3-ASR, SenseVoice, Moonshine, GigaAM, …), downloaded on demand. Default: `nemotron-3.5-asr-streaming-0.6b-q8`, multilingual across 39 locales.
+- **Local transcription** — 85 models across 16 families (Whisper, Parakeet, Nemotron, Canary, Voxtral, Qwen3-ASR, SenseVoice, Moonshine, GigaAM, …), downloaded on demand. Default: `parakeet-tdt-0.6b-v3-q8` (1.94% WER, 25 European locales); `nemotron-3.5-asr-streaming-0.6b-q8` for word-by-word live text across 32 locales.
 - **Live transcript** — streaming-native models transcribe continuously as you speak; batch-only models are segmented by voice activity and still work live.
 - **Built-in AI, no Ollama required** — a bundled `llama-helper` sidecar runs Gemma 4 locally for summaries, and can also transcribe directly as an audio LLM.
 - **Bring your own LLM** — summaries via Built-in AI, Ollama, Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint.
