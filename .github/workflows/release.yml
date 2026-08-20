@@ -111,9 +111,127 @@ jobs:
       release-id: ${{ needs.create-release.outputs.release-id }}
     secrets: inherit
 
-  # STEP 3: Show release summary
-  release-summary:
+  # STEP 3: Authenticode-sign the Windows installers through SignPath, then re-issue the
+  # updater signatures. tauri-action computed the .sig files over the *unsigned*
+  # installers, so shipping them as-is breaks auto-update for every Windows user: the
+  # bytes they download no longer match the signature the app checks.
+  sign-windows:
     needs: [create-release, build-all-platforms]
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Locate the unsigned installer artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                 --jq '.artifacts[] | select(.name == "unsigned-windows-installers") | .id' | head -1)
+          if [ -z "$ID" ]; then
+            echo "::error::No unsigned-windows-installers artifact. Did the Windows build fail?"
+            exit 1
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Sign installers via SignPath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.artifact.outputs.id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "1800"
+          output-artifact-directory: signed
+
+      # The whole point of this job. If SignPath hands back unsigned files the release
+      # must fail here, not ship a binary SmartScreen will block.
+      - name: Verify Authenticode signatures
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode
+          shopt -s nullglob
+          FILES=(signed/*.msi signed/*.exe)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::SignPath returned no installers"
+            exit 1
+          fi
+          for f in "${FILES[@]}"; do
+            echo "--- $f"
+            OUT=$(osslsigncode verify -in "$f" 2>&1) || true
+            echo "$OUT"
+            # Presence, not chain validity: without a -CAfile osslsigncode can reject a
+            # perfectly good signature, and chain trust is SignPath's problem, not ours.
+            if ! grep -qE "Number of signers: [1-9]" <<< "$OUT"; then
+              echo "::error::$f came back from SignPath without an Authenticode signature"
+              exit 1
+            fi
+          done
+
+      - name: Re-issue updater signatures over the signed installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          shopt -s nullglob
+          for f in signed/*.msi signed/*.exe; do
+            npx --yes @tauri-apps/cli@2.11.4 signer sign "$f"
+          done
+          ls -la signed
+
+      - name: Publish signed installers to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ needs.create-release.outputs.version }}"
+          RID="${{ needs.create-release.outputs.release-id }}"
+          R="${{ github.repository }}"
+
+          # A draft release has no git tag yet, so latest.json is not reachable by tag
+          # through the API. Go via the asset id instead.
+          AID=$(gh api "repos/$R/releases/$RID/assets" --jq '.[] | select(.name == "latest.json") | .id')
+          if [ -z "$AID" ]; then
+            echo "::error::latest.json missing from the release; the updater manifest cannot be patched"
+            exit 1
+          fi
+          gh api -H "Accept: application/octet-stream" "repos/$R/releases/assets/$AID" > latest.json
+
+          # ponytail: plain basename, no percent-decoding. productName and version are
+          # both slug-safe today, so no filename here can contain an escaped character.
+          WIN_FILE=$(basename "$(jq -r '.platforms["windows-x86_64"].url' latest.json)")
+          if [ ! -f "signed/$WIN_FILE.sig" ]; then
+            echo "::error::latest.json points at $WIN_FILE but SignPath returned no signed/$WIN_FILE"
+            exit 1
+          fi
+          SIG=$(cat "signed/$WIN_FILE.sig")
+          KEYS_BEFORE=$(jq -Sc '.platforms | keys' latest.json)
+          jq --arg s "$SIG" '.platforms["windows-x86_64"].signature = $s' \
+            latest.json > latest.patched.json
+          mv latest.patched.json latest.json
+
+          # A wrong jq path adds a sibling key instead of replacing the signature, and
+          # every Windows auto-update then fails against a manifest that reads fine.
+          # Check both the value and that no platform key appeared or vanished.
+          jq -e --arg s "$SIG" '.platforms["windows-x86_64"].signature == $s' latest.json > /dev/null \
+            || { echo "::error::latest.json signature patch did not take"; exit 1; }
+          if [ "$(jq -Sc '.platforms | keys' latest.json)" != "$KEYS_BEFORE" ]; then
+            echo "::error::latest.json platform keys changed: $KEYS_BEFORE -> $(jq -Sc '.platforms | keys' latest.json)"
+            exit 1
+          fi
+
+          # Same filenames as the unsigned uploads, so --clobber replaces them in place.
+          gh release upload "v$V" signed/* latest.json --clobber
+
+          echo "Replaced on the release:" >> $GITHUB_STEP_SUMMARY
+          for f in signed/*; do echo "- \`$(basename "$f")\`" >> $GITHUB_STEP_SUMMARY; done
+          echo "- \`latest.json\` (windows-x86_64 signature re-issued)" >> $GITHUB_STEP_SUMMARY
+
+  # STEP 4: Show release summary
+  release-summary:
+    needs: [create-release, build-all-platforms, sign-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -163,7 +281,7 @@ jobs:
           echo ""
           echo "Uploaded assets (via tauri-action):"
           echo "  - macOS: DMG installer + app.tar.gz (for updater) + .sig"
-          echo "  - Windows: MSI + NSIS installers (SIGNED via signCommand) + .sig files"
+          echo "  - Windows: MSI + NSIS installers (Authenticode-signed via SignPath) + re-issued .sig files"
           echo "  - Updater manifest: latest.json (auto-generated by tauri-action)"
           echo ""
           echo "Next steps:"
@@ -184,7 +302,7 @@ jobs:
           echo "| Platform | Assets |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| **macOS** | DMG installer, app.tar.gz (updater), .sig |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Windows** | MSI installer (SIGNED), NSIS installer (SIGNED), .sig files |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Windows** | MSI + NSIS installers (SignPath-signed), re-issued .sig files |" >> $GITHUB_STEP_SUMMARY
           echo "| **Updater** | latest.json manifest (auto-generated by tauri-action) |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
