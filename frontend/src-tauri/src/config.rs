@@ -33,16 +33,28 @@ pub fn is_builtin_transcript_provider(provider: &str) -> bool {
     provider == BUILTIN_TRANSCRIPT_PROVIDER
 }
 
-/// Default transcribe.cpp model. Multilingual and streaming-native, so it needs
-/// no VAD segmentation on the live path.
-pub const DEFAULT_TRANSCRIBE_MODEL: &str = "nemotron-3.5-asr-streaming-0.6b-q8";
+/// Default transcribe.cpp model. Chosen on WER: 1.94% on LibriSpeech test-clean
+/// against nemotron-3.5's 3.06%, at the same download size.
+///
+/// Batch-only, so the live path segments with VAD and decodes each segment whole:
+/// no `transcript-partial` events, and text lands one segment at a time
+/// (`LIVE_MAX_SEGMENT_SAMPLES`, 8s) rather than as you speak. Its "Medium" speed
+/// is what keeps that sustainable — a "Slow" model falls behind real time and
+/// `segmented.rs` drops the oldest audio past the 30s backlog cap.
+///
+/// 25 European locales. Anyone recording Chinese, Japanese, Korean, Arabic, or
+/// Hindi wants `nemotron-3.5-asr-streaming-0.6b-q8` instead, which also restores
+/// word-by-word live text.
+pub const DEFAULT_TRANSCRIBE_MODEL: &str = "parakeet-tdt-0.6b-v3-q8";
 
 /// Models the picker marks "Recommended". Every catalog row is listed and
 /// selectable — this only decides which ones carry the label.
 ///
-/// The live entries are streaming-native; the import entries are batch-only and
-/// only worth their latency on a file.
+/// The live entries are streaming-native — the exception is the default, which
+/// trades that for WER (see `DEFAULT_TRANSCRIBE_MODEL`). The import entries are
+/// batch-only and only worth their latency on a file.
 pub const RECOMMENDED_LIVE_MODELS: &[&str] = &[
+    "parakeet-tdt-0.6b-v3-q8",
     "nemotron-3.5-asr-streaming-0.6b-q8",
     "nemotron-3.5-asr-streaming-0.6b-q4",
     "moonshine-streaming-small-q8",
@@ -54,8 +66,9 @@ pub const RECOMMENDED_LIVE_MODELS: &[&str] = &[
 ///
 /// Both sit at the top of the Open ASR Leaderboard (granite-speech-4.1-2b 5.33%
 /// avg WER, cohere-transcribe-03-2026 5.42%), which is what a file is worth
-/// waiting for. whisper-large-v3-turbo and parakeet-tdt-0.6b-v3 are still in
-/// the catalog, just no longer the first thing offered.
+/// waiting for. whisper-large-v3-turbo is still in the catalog, just no longer
+/// the first thing offered; parakeet-tdt-0.6b-v3 is the live default, and on a
+/// file these two beat it.
 pub const RECOMMENDED_IMPORT_MODELS: &[&str] = &[
     "granite-speech-4.1-2b-plus-q8",
     "cohere-transcribe-03-2026-q8",
