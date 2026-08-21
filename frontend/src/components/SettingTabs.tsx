@@ -3,7 +3,6 @@ import { ModelConfig, ModelSettingsModal } from "./ModelSettingsModal"
 import { TranscriptModelProps, TranscriptSettings } from "./TranscriptSettings"
 import { RecordingSettings, RecordingPreferences } from "./RecordingSettings"
 import { About } from "./About";
-import { GitSyncSettings } from "./GitSyncSettings";
 
 interface SettingTabsProps {
     modelConfig: ModelConfig;
@@ -37,7 +36,6 @@ export function SettingTabs({
     <TabsTrigger value="transcriptSettings">Transcript</TabsTrigger>
     <TabsTrigger value="modelSettings">Ai Summary</TabsTrigger>
     <TabsTrigger value="recordingSettings">Preferences</TabsTrigger>
-    <TabsTrigger value="gitSync">Sync</TabsTrigger>
     <TabsTrigger value="about">About</TabsTrigger>
   </TabsList>
   <TabsContent value="modelSettings">
@@ -57,9 +55,6 @@ onSave={onSave}
   </TabsContent>
   <TabsContent value="recordingSettings">
     <RecordingSettings />
-  </TabsContent>
-  <TabsContent value="gitSync">
-    <GitSyncSettings />
   </TabsContent>
   <TabsContent value="about">
     <About />
