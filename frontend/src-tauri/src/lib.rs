@@ -41,6 +41,7 @@ pub mod call_detector;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod git_sync;
 pub mod migrate;
 pub mod notifications;
 pub mod ollama;
@@ -736,6 +737,12 @@ pub fn run() {
             database::commands::check_homebrew_database,
             database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
+            // Git sync commands
+            git_sync::git_sync_get_settings,
+            git_sync::git_sync_set_settings,
+            git_sync::git_sync_select_repo_folder,
+            git_sync::git_sync_status,
+            git_sync::git_sync_run,
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
