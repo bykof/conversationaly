@@ -121,6 +121,11 @@ ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", bran
 
 sqlx = { version = "0.9", features = [ "runtime-tokio", "sqlite", "chrono"] }
 
+# git-Sync der Meeting-Markdowns. `ssh` ist aus (wir sprechen nur HTTPS+PAT),
+# vendored, weil libgit2-sys/openssl-sys sonst auf drei Plattformen drei
+# verschiedene Systempakete verlangen.
+git2 = { version = "0.20", default-features = false, features = ["https", "vendored-libgit2", "vendored-openssl"] }
+
 # Common Tauri configuration
 tauri = { version = "2.6.2", features = [ "macos-private-api", "protocol-asset", "tray-icon"] }
 tauri-plugin-fs = "2.4.0"
