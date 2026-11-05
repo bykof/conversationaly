@@ -159,6 +159,12 @@ transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev
 #   --features openblas (OpenBLAS optimization, requires BLAS_INCLUDE_DIRS)
 [target.'cfg(target_os = "windows")'.dependencies]
 futures-channel = "0.3.31"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+] }
+windows-core = "0.61"
 
 # default-features = false: transcribe-cpp defaults to `metal`, which is a
 # macOS-only no-op elsewhere but must not be the implied backend here.
