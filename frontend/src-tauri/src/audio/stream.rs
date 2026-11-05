@@ -15,7 +15,14 @@ use super::capture::CoreAudioCapture;
 /// Stream backend implementation
 pub enum StreamBackend {
     /// CPAL-based stream (ScreenCaptureKit or default)
-    Cpal(Stream),
+    Cpal {
+        stream: Stream,
+        /// Companion silent output render stream on Windows for system loopback devices.
+        /// Keeps the Windows 11 Volume Mixer session active (not greyed out at 1%) and
+        /// ensures the WASAPI render endpoint clock continuously drives loopback capture.
+        #[cfg(target_os = "windows")]
+        silent_output_stream: Option<Stream>,
+    },
     /// Core Audio direct implementation (macOS only)
     #[cfg(target_os = "macos")]
     CoreAudio {
@@ -113,6 +120,34 @@ impl AudioStream {
         info!("Audio config - Sample rate: {}, Channels: {}, Format: {:?}",
               config.sample_rate(), config.channels(), config.sample_format());
 
+        // On Windows, when capturing system audio via WASAPI loopback (DeviceType::System),
+        // also open a silent output render stream (IAudioRenderClient) on the same output
+        // device so Windows 11 Volume Mixer keeps the app's slider enabled at 100% (not
+        // greyed out at 1%) and the WASAPI render clock continuously drives loopback buffers.
+        #[cfg(target_os = "windows")]
+        let silent_output_stream = if device_type == DeviceType::System
+            || device.device_type == super::devices::DeviceType::Output
+        {
+            match super::devices::platform::build_silent_output_stream(&cpal_device, Some(&config)) {
+                Ok(out_stream) => {
+                    info!(
+                        "Started companion silent WASAPI render stream for loopback device: {}",
+                        device.name
+                    );
+                    Some(out_stream)
+                }
+                Err(e) => {
+                    warn!(
+                        "Could not start companion silent render stream for {}: {}",
+                        device.name, e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Create audio capture processor
         let capture = AudioCapture::new(
             device.clone(),
@@ -129,9 +164,19 @@ impl AudioStream {
         stream.play()?;
         info!("CPAL stream started for device: {}", device.name);
 
+        #[cfg(target_os = "windows")]
+        {
+            super::devices::platform::init_windows_audio_session_keeper();
+            super::devices::platform::ensure_windows_audio_session_volume(false);
+        }
+
         Ok(Self {
             device,
-            backend: StreamBackend::Cpal(stream),
+            backend: StreamBackend::Cpal {
+                stream,
+                #[cfg(target_os = "windows")]
+                silent_output_stream,
+            },
         })
     }
 
@@ -286,7 +331,11 @@ impl AudioStream {
         info!("Stopping audio stream for device: {}", self.device.name);
 
         match self.backend {
-            StreamBackend::Cpal(stream) => {
+            StreamBackend::Cpal {
+                stream,
+                #[cfg(target_os = "windows")]
+                silent_output_stream,
+            } => {
                 // CRITICAL: Pause the stream first to stop callbacks immediately
                 // This ensures closures stop executing before we drop the stream,
                 // allowing Arc references captured in callbacks to be released
@@ -295,6 +344,15 @@ impl AudioStream {
                 }
                 info!("Stream paused, now dropping to release callbacks");
                 drop(stream);
+
+                #[cfg(target_os = "windows")]
+                if let Some(out_stream) = silent_output_stream {
+                    let _ = out_stream.pause();
+                    drop(out_stream);
+                }
+
+                #[cfg(target_os = "windows")]
+                super::devices::platform::ensure_windows_audio_session_volume(false);
             }
             #[cfg(target_os = "macos")]
             StreamBackend::CoreAudio { task } => {

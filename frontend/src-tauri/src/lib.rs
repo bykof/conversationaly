@@ -488,6 +488,10 @@ pub fn run() {
             // Nudge the user to record when a meeting app launches
             call_detector::spawn(_app.handle().clone());
 
+            // On Windows, keep a silent WASAPI output session active and restore Volume Mixer if stuck at 1%
+            #[cfg(target_os = "windows")]
+            audio::devices::platform::init_windows_audio_session_keeper();
+
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
             let app_for_notif = _app.handle().clone();

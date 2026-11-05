@@ -861,6 +861,8 @@ dependencies = [
  "uuid",
  "whatlang",
  "which",
+ "windows",
+ "windows-core",
  "xz2",
  "zip 8.6.0",
 ]
